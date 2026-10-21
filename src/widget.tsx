@@ -388,6 +388,9 @@ export function FeedbackWidget({
   } | null>(null);
   const [pending, startTransition] = useTransition();
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
+  // Lets the capture-phase click handler know whether a draft is open, without re-mounting the
+  // listeners on every draft change.
+  const draftOpenRef = useRef(false);
 
   // Live listener on `uxFeedback` ordered by timestamp.One listener for the whole app so a
   // comment dropped on one tab appears on another in realtime. Mounted ONLY when the widget is
@@ -584,16 +587,34 @@ export function FeedbackWidget({
       e.preventDefault();
       e.stopImmediatePropagation();
       e.stopPropagation();
+      // A draft is already open: this click on the page OUTSIDE the box dismisses that draft,
+      // but STAYS in feedback mode. The next click drops a fresh pin.
+      if (draftOpenRef.current) {
+        setDraft(null);
+        return;
+      }
       const x = Math.round(e.pageX);
       const y = Math.round(e.pageY);
       const selector = captureSelector(target);
       const element = captureElement(target, x, y);
       setDraft({ coords: { x, y }, selector, element, text: '' });
-      // Flip mode OFF while a draft is open so a mis-click doesn't spawn a second draft.
-      setMode('off');
+      // Stay in feedback mode — the reviewer keeps dropping pins (save → another → …) until
+      // Esc or the FAB toggle turns it off. Industry-standard "comment mode" behaviour.
+    }
+
+    // Esc exits feedback mode entirely (and drops any open draft). Capture phase so it wins even
+    // when focus is inside the draft textarea. The other way out is the bottom-right FAB toggle.
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setDraft(null);
+        setMode('off');
+      }
     }
 
     document.addEventListener('click', onClick, true);
+    document.addEventListener('keydown', onKey, true);
     document.addEventListener('mousedown', swallow, true);
     document.addEventListener('pointerdown', swallow, true);
     document.addEventListener('mouseup', swallow, true);
@@ -603,6 +624,7 @@ export function FeedbackWidget({
       document.documentElement.classList.remove('cursor-crosshair');
       cursorStyle.remove();
       document.removeEventListener('click', onClick, true);
+      document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('mousedown', swallow, true);
       document.removeEventListener('pointerdown', swallow, true);
       document.removeEventListener('mouseup', swallow, true);
@@ -611,8 +633,9 @@ export function FeedbackWidget({
     };
   }, [mode]);
 
-  // Focus the draft textarea when the bubble opens.
+  // Focus the draft textarea when the bubble opens; keep draftOpenRef in sync for the handler.
   useEffect(() => {
+    draftOpenRef.current = draft !== null;
     if (draft) draftRef.current?.focus();
   }, [draft]);
 
@@ -693,13 +716,13 @@ export function FeedbackWidget({
             className="fixed top-4 left-1/2 z-[9300] flex -translate-x-1/2 items-center gap-3 rounded-full border border-amber-400 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-900 shadow-xl dark:bg-amber-950 dark:text-amber-100"
           >
             <Icon icon="ads_click" className="text-[16px]!" />
-            <span>Click any part of the page to drop a feedback pin</span>
+            <span>Click anywhere to add feedback — keep adding, then Esc to finish</span>
             <button
               type="button"
               onClick={() => setMode('off')}
               className="rounded-full border border-amber-300 bg-white px-2 py-0.5 text-amber-900 hover:bg-amber-100 dark:bg-amber-900 dark:text-amber-100 dark:hover:bg-amber-800"
             >
-              Cancel
+              Done
             </button>
           </div>
         </>
@@ -930,6 +953,22 @@ export function FeedbackWidget({
             </div>
           );
         })()}
+
+      {/* Draft PIN — shows exactly where the new comment will land, so the reviewer can see the
+          spot while the composer (offset below, via clampPopoverPosition) stays clear of it.
+          Blue + pulse distinguishes it from saved amber pins; chrome so clicking it won't be
+          read as an outside-click dismiss. Same geometry as a real pin: tip at the click point. */}
+      {draft && (
+        <div
+          data-feedback-chrome
+          aria-hidden="true"
+          className="pointer-events-none absolute z-[9099] inline-flex h-[18px] min-w-[18px] -translate-y-full items-center justify-center rounded-tl-md rounded-tr-md rounded-br-md px-1 text-[10px] font-semibold text-white shadow ring-2 ring-white bg-blue-600"
+          style={{ left: draft.coords.x, top: draft.coords.y }}
+        >
+          <span className="pointer-events-none absolute inset-0 animate-ping rounded-tl-md rounded-tr-md rounded-br-md bg-blue-400 opacity-75" />
+          <span className="relative">+</span>
+        </div>
+      )}
 
       {/* Draft bubble — pops up right after the user clicks on a target. */}
       {draft && (

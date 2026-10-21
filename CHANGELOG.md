@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.6 — 2026-10-21
+
+Industry-standard "comment mode" — persistent, keyboard-dismissable.
+
+- **Draft pin shows at the click point** — clicking in feedback mode now drops a visible blue
+  pulsing pin exactly where the comment will land, so the reviewer can see the spot. The
+  composer opens offset below (via `clampPopoverPosition`) so it never covers the pin.
+- **Feedback mode stays on** — saving a comment, cancelling, or clicking outside the box no
+  longer exits feedback mode. Reviewers keep dropping pins (one after another) without
+  re-enabling. Clicking outside an open draft just dismisses that draft.
+- **Exit only on Esc or the FAB toggle** — Esc (capture phase, works from inside the textarea)
+  turns feedback mode off and drops any open draft; the bottom-right toggle still works. The
+  mode banner button is relabelled "Done".
+
 ## 1.0.5 — 2026-10-21
 
 - **Pin is smaller** — 24×24 → 18×18 (user report, pin was too large relative to surrounding
