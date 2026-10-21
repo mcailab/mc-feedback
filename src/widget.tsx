@@ -67,6 +67,49 @@ interface Comment {
 // A short "N min ago" / "yesterday" / "Mar 3" label for a timestamp. Keeps the drawer compact
 // — a full date is noise on something written five minutes ago, and the time is background
 // context not the headline. Fallback to an empty string so a missing ts renders nothing.
+// Clamp a popover's anchor-centred page position so the box stays inside the viewport. Used
+// by both the comment popover and the draft bubble so neither can escape when a reviewer
+// clicks near an edge. `boxWidth` is the known rendered width (both use w-72 = 288px);
+// `boxHeight` is a conservative upper bound since the popover's real height is content-driven
+// and only known after render. Returns `{left, top}` as page coordinates — pair with
+// `absolute` positioning and no `-translate-x-1/2`.
+function clampPopoverPosition(
+  anchorPageX: number,
+  anchorPageY: number,
+  boxWidth = 288,
+  boxHeight = 260,
+): { left: number; top: number } {
+  const MARGIN = 12;
+  const GAP = 20;
+  if (typeof window === 'undefined') {
+    return { left: anchorPageX - boxWidth / 2, top: anchorPageY + GAP };
+  }
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const sx = window.scrollX;
+  const sy = window.scrollY;
+
+  // Horizontal: ideal centred on the anchor, then nudge whichever edge is overflowing until
+  // the box fits. If the box is wider than the viewport (narrow mobile) just pin to the left.
+  let left = anchorPageX - boxWidth / 2;
+  const vpLeft = left - sx;
+  if (vpLeft < MARGIN) left = sx + MARGIN;
+  else if (vpLeft + boxWidth > vw - MARGIN) left = sx + vw - boxWidth - MARGIN;
+
+  // Vertical: default below the anchor; if that would overflow the bottom, flip above. If
+  // neither fits (very short viewport) clamp to the viewport top so at least the top of the
+  // box is reachable.
+  let top = anchorPageY + GAP;
+  const vpTop = top - sy;
+  if (vpTop + boxHeight > vh - MARGIN) {
+    const flipped = anchorPageY - boxHeight - GAP;
+    if (flipped - sy >= MARGIN) top = flipped;
+    else top = sy + MARGIN;
+  }
+
+  return { left: Math.round(left), top: Math.round(top) };
+}
+
 function timeAgo(ts: number): string {
   if (!ts) return '';
   const now = Date.now();
@@ -326,6 +369,11 @@ export function FeedbackWidget({
   // to without losing the draft. One at a time keeps the drawer compact.
   const [drawerReplyFor, setDrawerReplyFor] = useState<string | null>(null);
   const [drawerReplyText, setDrawerReplyText] = useState('');
+  // Which comment is currently being EDITED (via the pencil icon) and the in-progress draft.
+  // Author-only — the pencil icon is only shown on rows the current user authored. One at a
+  // time, same as the inline-reply pattern, so the drawer stays compact.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
   // Drag state for repositioning a pin. The id of the currently-dragging pin, plus a ref that
   // keeps the start coords without re-rendering on every pointermove. `moved` guards the
   // click-vs-drag split: a pointer that never moves past PIN_DRAG_THRESHOLD counts as a click
@@ -503,29 +551,63 @@ export function FeedbackWidget({
   useEffect(() => {
     if (mode !== 'on') return;
     document.documentElement.classList.add('cursor-crosshair');
+    // Force the crosshair cursor on EVERY element while feedback mode is on, overriding
+    // link/button `cursor: pointer` rules. Without this, hovering a link flips the cursor to
+    // the pointing finger and the reviewer thinks they're about to follow the link rather
+    // than drop a pin (bug report, 2026-10-21).
+    const cursorStyle = document.createElement('style');
+    cursorStyle.setAttribute('data-feedback-cursor', '1');
+    cursorStyle.textContent =
+      'html.cursor-crosshair, html.cursor-crosshair * { cursor: crosshair !important; }';
+    document.head.appendChild(cursorStyle);
+
+    // Capture-phase, pre-handler swallow of EVERY click/pointer/mouse event that lands on
+    // page content. Links, form submits, button handlers — all suppressed while feedback
+    // mode is on, so the only outcome of a click is dropping a pin.
+    //   - `stopImmediatePropagation` is critical. `stopPropagation` only blocks later
+    //     elements in the capture/bubble chain; the target's OWN listener in the same
+    //     phase still runs. `stopImmediate*` blocks every subsequent listener for this event.
+    //   - We also swallow `pointerdown` and `mousedown` because some UI (Radix, Framer, custom
+    //     drags) commits actions on pointerdown without waiting for the click.
+    function swallow(e: Event) {
+      const target = e.target as HTMLElement | null;
+      // Widget's own chrome (FAB, drawer, draft bubble, pins) must stay interactive — that
+      // includes the Cancel button that gets the reviewer OUT of feedback mode.
+      if (target?.closest('[data-feedback-chrome]')) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      e.stopPropagation();
+    }
     function onClick(e: MouseEvent) {
-      // Ignore clicks landing INSIDE the widget's own chrome (FAB, drawer, draft bubble, pins).
       const target = e.target as HTMLElement | null;
       if (target?.closest('[data-feedback-chrome]')) return;
       e.preventDefault();
+      e.stopImmediatePropagation();
       e.stopPropagation();
-      // Capture absolute page coords so pins stay put when the reader scrolls.
       const x = Math.round(e.pageX);
       const y = Math.round(e.pageY);
       const selector = captureSelector(target);
-      // Rich element context + offset-percentage anchor (phase 1, 2026-10-21). Lets the pin
-      // follow its element across viewports and gives the dev reading the drawer actionable
-      // context about what was clicked. Falls back to the raw coords when the selector
-      // doesn't resolve on a future viewport.
       const element = captureElement(target, x, y);
       setDraft({ coords: { x, y }, selector, element, text: '' });
       // Flip mode OFF while a draft is open so a mis-click doesn't spawn a second draft.
       setMode('off');
     }
+
     document.addEventListener('click', onClick, true);
+    document.addEventListener('mousedown', swallow, true);
+    document.addEventListener('pointerdown', swallow, true);
+    document.addEventListener('mouseup', swallow, true);
+    document.addEventListener('pointerup', swallow, true);
+    document.addEventListener('auxclick', swallow, true);
     return () => {
       document.documentElement.classList.remove('cursor-crosshair');
+      cursorStyle.remove();
       document.removeEventListener('click', onClick, true);
+      document.removeEventListener('mousedown', swallow, true);
+      document.removeEventListener('pointerdown', swallow, true);
+      document.removeEventListener('mouseup', swallow, true);
+      document.removeEventListener('pointerup', swallow, true);
+      document.removeEventListener('auxclick', swallow, true);
     };
   }, [mode]);
 
@@ -755,8 +837,8 @@ export function FeedbackWidget({
           return (
             <div
               data-feedback-chrome
-              className="absolute z-[9001] w-72 -translate-x-1/2 rounded-lg border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
-              style={{ left: effective.x, top: effective.y + 20 }}
+              className="absolute z-[9001] w-72 rounded-lg border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+              style={clampPopoverPosition(effective.x, effective.y)}
             >
               <div className="mb-2 flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
                 <span className="truncate font-medium text-zinc-700 dark:text-zinc-200">
@@ -801,7 +883,7 @@ export function FeedbackWidget({
                   type="button"
                   onClick={() => reply(c.id)}
                   disabled={!replyText.trim() || pending}
-                  className="rounded bg-brand-blue px-2 py-1 font-medium text-white disabled:opacity-50"
+                  className="rounded bg-blue-600 px-2 py-1 font-medium text-white disabled:opacity-50"
                 >
                   Reply
                 </button>
@@ -812,6 +894,21 @@ export function FeedbackWidget({
                 >
                   {c.done ? 'Reopen' : 'Resolve'}
                 </button>
+                {canDelete && actions.edit && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingId(c.id);
+                      setEditingText(c.text);
+                      setActiveCommentId(null);
+                    }}
+                    title="Edit this comment"
+                    className="inline-flex items-center gap-0.5 rounded border border-zinc-300 px-2 py-1 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                  >
+                    <Icon icon="edit" className="text-[12px]!" />
+                    Edit
+                  </button>
+                )}
                 {canDelete && (
                   <button
                     type="button"
@@ -837,8 +934,8 @@ export function FeedbackWidget({
       {draft && (
         <div
           data-feedback-chrome
-          className="absolute z-[9100] w-72 -translate-x-1/2 rounded-lg border border-amber-200 bg-white p-3 shadow-xl dark:border-amber-900 dark:bg-zinc-900"
-          style={{ left: draft.coords.x, top: draft.coords.y + 20 }}
+          className="absolute z-[9100] w-72 rounded-lg border border-amber-200 bg-white p-3 shadow-xl dark:border-amber-900 dark:bg-zinc-900"
+          style={clampPopoverPosition(draft.coords.x, draft.coords.y)}
         >
           <p className="mb-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
             Add feedback — as {name || email}
@@ -856,7 +953,7 @@ export function FeedbackWidget({
               type="button"
               onClick={saveDraft}
               disabled={!draft.text.trim() || pending}
-              className="rounded bg-brand-blue px-3 py-1 font-medium text-white disabled:opacity-50"
+              className="rounded bg-blue-600 px-3 py-1 font-medium text-white disabled:opacity-50"
             >
               Save
             </button>
@@ -900,7 +997,7 @@ export function FeedbackWidget({
               onClick={() => setDrawerTab('open')}
               className={`inline-flex items-center gap-1 rounded px-2 py-1 font-medium ${
                 drawerTab === 'open'
-                  ? 'bg-brand-blue text-white'
+                  ? 'bg-blue-600 text-white'
                   : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'
               }`}
             >
@@ -912,7 +1009,7 @@ export function FeedbackWidget({
               onClick={() => setDrawerTab('done')}
               className={`inline-flex items-center gap-1 rounded px-2 py-1 font-medium ${
                 drawerTab === 'done'
-                  ? 'bg-brand-blue text-white'
+                  ? 'bg-blue-600 text-white'
                   : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'
               }`}
             >
@@ -924,7 +1021,7 @@ export function FeedbackWidget({
               onClick={() => setDrawerTab('users')}
               className={`inline-flex items-center gap-1 rounded px-2 py-1 font-medium ${
                 drawerTab === 'users'
-                  ? 'bg-brand-blue text-white'
+                  ? 'bg-blue-600 text-white'
                   : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'
               }`}
             >
@@ -1174,9 +1271,53 @@ export function FeedbackWidget({
                                 {c.text}
                               </p>
                             </button>
-                            {/* ACTION ROW — Reply on the left, Resolve/Reopen on the right. */}
-                            {!openReply && (
-                              <div className="mt-2 flex items-center gap-2 border-t border-zinc-100 pt-2 dark:border-zinc-700">
+                            {/* Inline edit textarea for the current user's comment, replaces
+                                the action row while open. Author-only — the pencil icon that
+                                opens this is only shown on rows the current user wrote. */}
+                            {editingId === c.id && actions.edit ? (
+                              <div className="mt-2 border-t border-zinc-100 pt-2 dark:border-zinc-700">
+                                <textarea
+                                  value={editingText}
+                                  onChange={(e) => setEditingText(e.target.value)}
+                                  rows={3}
+                                  autoFocus
+                                  className="w-full resize-none rounded border border-zinc-200 p-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                                />
+                                <div className="mt-1 flex items-center justify-end gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingId(null);
+                                      setEditingText('');
+                                    }}
+                                    className="rounded px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={pending || !editingText.trim() || editingText.trim() === c.text}
+                                    onClick={() => {
+                                      const txt = editingText.trim();
+                                      if (!txt) return;
+                                      startTransition(async () => {
+                                        const r = await actions.edit!(c.id, txt);
+                                        if (r.ok) {
+                                          setEditingId(null);
+                                          setEditingText('');
+                                        }
+                                      });
+                                    }}
+                                    className="rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                                  >
+                                    Save
+                                  </button>
+                                </div>
+                              </div>
+                            ) : null}
+                            {/* ACTION ROW — Reply, Edit (author-only), Resolve on the right. */}
+                            {!openReply && editingId !== c.id && (
+                              <div className="mt-2 flex items-center gap-1 border-t border-zinc-100 pt-2 dark:border-zinc-700">
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -1184,10 +1325,24 @@ export function FeedbackWidget({
                                     setDrawerReplyText('');
                                   }}
                                   disabled={pending}
-                                  className="rounded px-2 py-1 text-[11px] font-medium text-brand-blue hover:bg-brand-blue/10 disabled:opacity-50"
+                                  className="rounded px-2 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-100 dark:text-blue-400 dark:hover:bg-blue-900/40 disabled:opacity-50"
                                 >
                                   Reply
                                 </button>
+                                {c.authorUid === uid && actions.edit && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingId(c.id);
+                                      setEditingText(c.text);
+                                    }}
+                                    disabled={pending}
+                                    title="Edit this comment"
+                                    className="inline-flex items-center gap-0.5 rounded px-2 py-1 text-[11px] font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
+                                  >
+                                    <Icon icon="edit" className="text-[14px]!" />
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => toggleDone(c.id, !c.done)}
@@ -1245,7 +1400,7 @@ export function FeedbackWidget({
                                         }
                                       });
                                     }}
-                                    className="rounded bg-brand-blue px-2 py-1 text-[11px] font-medium text-white hover:bg-brand-blue/90 disabled:opacity-50"
+                                    className="rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                                   >
                                     Send
                                   </button>

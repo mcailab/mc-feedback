@@ -33,6 +33,10 @@ export interface FeedbackActions {
     done: boolean,
   ) => Promise<{ ok: boolean; error?: string }>;
   delete: (commentId: string) => Promise<{ ok: boolean; error?: string }>;
+  edit?: (
+    commentId: string,
+    text: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
   move: (
     commentId: string,
     coords: { x: number; y: number },
