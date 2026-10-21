@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.5 — 2026-10-21
+
+- **Pin is smaller** — 24×24 → 18×18 (user report, pin was too large relative to surrounding
+  UI). Font size trimmed to 10px, corner radius tightened to `rounded-md`, active-pin scale
+  reduced from 125% to 110%.
+
 ## 1.0.4 — 2026-10-21
 
 - **Edit button is grouped on the LEFT in the pin popover** — right after Reply instead of
