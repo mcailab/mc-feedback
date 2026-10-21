@@ -182,18 +182,42 @@ For this to be useful, you need **two custom domains pointing at the SAME Fireba
 
 ## Updating
 
+### One command for every consumer
+
+Run the bundled updater from this repo — it syncs every registered consumer's vendored copy, runs their install, and leaves each project's working tree dirty for you to review:
+
 ```bash
-# Push changes to github.com/mcailab/mc-feedback (bump CHANGELOG + tag)
-# Then in each consuming project:
-npm update @mcailab/mc-feedback
-# or:  npm install mcailab/mc-feedback#v1.2.0
-git commit -am "chore: bump mc-feedback"
-git push
+cd ~/Project/MC/mc-feedback
+scripts/update-consumers.sh                 # update to latest tag
+scripts/update-consumers.sh v1.2.0          # update to a specific tag
+scripts/update-consumers.sh --dry-run       # see what would change, no writes
 ```
 
-Firebase App Hosting rebuilds, the update is live.
+Known consumers are declared at the top of the script (`CONSUMERS=(...)` for the vendored ones + an `ATS_DIR` special-case for mc-ats's in-tree folder). Add a line for each new project that adopts the package.
 
-**One push to this repo + one `npm update` per consumer** = every project in sync.
+After the sync, review the diff + commit in each consumer:
+
+```bash
+cd ~/Project/MC/mc-eip && git diff vendor/mc-feedback && git commit -am "chore: bump mc-feedback" && git push
+cd ~/Project/MC/mcapt  && git diff vendor/mc-feedback && git commit -am "chore: bump mc-feedback" && git push
+cd ~/Project/MC/mc-ats && git diff src/components/feedback && git commit -am "chore: bump mc-feedback" && git push
+```
+
+Firebase App Hosting rebuilds each one, the update is live.
+
+### Per-consumer manual update (if you prefer)
+
+```bash
+# npm (when the repo is public)
+npm update @mcailab/mc-feedback
+# pnpm (incl. mcapt's monorepo — run inside app/)
+pnpm update @mcailab/mc-feedback
+# or pin to a new tag
+npm install mcailab/mc-feedback#v1.2.0
+
+# or re-vendor by hand (while repo is private)
+cd vendor/mc-feedback && git init && git remote add origin https://github.com/mcailab/mc-feedback && git fetch --tags && git checkout v1.2.0 && rm -rf .git
+```
 
 ## Data model
 
