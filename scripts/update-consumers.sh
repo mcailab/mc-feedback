@@ -60,18 +60,18 @@ PKG_FULL_COMMIT="$(git rev-parse HEAD)"
 # Note: ATS vendors the files directly inside `src/components/feedback/` rather
 # than in a `vendor/` folder, so it's handled separately below.
 CONSUMERS=(
-  "mc-eip|$HOME/Project/MC/mc-eip|npm install"
-  "mcapt|$HOME/Project/MC/mcapt|cd app && pnpm install"
+  "mc-eip|$HOME/Project/MC/mc-eip|vendor/mc-feedback|npm install"
+  "mcapt|$HOME/Project/MC/mcapt|app/vendor/mc-feedback|cd app && pnpm install"
 )
 
 sync_vendor() {
-  local label="$1" root="$2" install="$3"
+  local label="$1" root="$2" vendor_rel="$3" install="$4"
 
   if [[ ! -d "$root" ]]; then
     printf "   ⚠️  %-10s: %s not found, skipped\n" "$label" "$root"
     return
   fi
-  local vendor_dir="$root/vendor/mc-feedback"
+  local vendor_dir="$root/$vendor_rel"
   printf "   → %-10s %s\n" "$label" "$vendor_dir"
 
   if [[ -n "$DRY_RUN" ]]; then
@@ -107,8 +107,8 @@ EOF
 echo ""
 echo "🔄 Syncing vendored consumers to $VERSION ($PKG_COMMIT):"
 for row in "${CONSUMERS[@]}"; do
-  IFS="|" read -r label root install <<<"$row"
-  sync_vendor "$label" "$root" "$install"
+  IFS="|" read -r label root vendor_rel install <<<"$row"
+  sync_vendor "$label" "$root" "$vendor_rel" "$install"
 done
 
 # --- ATS — special-case: vendored files sit inside src/components/feedback/ ---
