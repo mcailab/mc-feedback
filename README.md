@@ -97,12 +97,33 @@ firebase deploy --only firestore:rules,firestore:indexes
 In `apphosting.yaml` or `.env.local`:
 
 ```yaml
-NEXT_PUBLIC_FEEDBACK_HOSTS: review.yourproject.com,yourproject-review.mcai.dev
+NEXT_PUBLIC_FEEDBACK_HOSTS: review.yourproject.example,review-yourproject.other-tld.example
 # optional, defaults to 'feedback':
 FEEDBACK_COLLECTION: feedback
 ```
 
 The widget renders on these hostnames only. Reviewers visit a listed host → the FAB appears. Any other host → the widget renders nothing (and runs zero Firestore reads).
+
+### The two-domain pattern
+
+For this to be useful, you need **two custom domains pointing at the SAME Firebase App Hosting backend** (same code, same data, same auth) and the review one listed in `NEXT_PUBLIC_FEEDBACK_HOSTS`:
+
+| Domain | Purpose | FAB? | Example (any TLD you like) |
+|---|---|---|---|
+| **Production** | Day-to-day use by real users | Off | `yourapp.company.example` |
+| **Review mirror** | Dedicated host for UX feedback sessions | **Auto-on** | `review.yourapp.company.example` or a short host on a different TLD |
+
+**Why two?** The production host should stay clean — a FAB floating over the real UI is unwanted noise for day-to-day users, and persisted enable-states can leak across sessions. The review host serves the SAME code and the SAME data, with the FAB automatically on. Reviewers go there, drop pins, see real records.
+
+**Firebase App Hosting setup (per backend):**
+1. Add BOTH custom domains to the same backend in Firebase Console → App Hosting → `<backend>` → Domains
+2. Each adds a DNS record (A + TXT + CNAME) to whichever zone owns that hostname
+3. Once SSL issues for both, add the REVIEW hostname (lowercase) to `NEXT_PUBLIC_FEEDBACK_HOSTS`
+4. Rebuild — reviewers now visit the review host and see the FAB
+
+**Picking the second domain** — any TLD/zone you control works. ATS uses one production TLD + a `.dev` for review (`careers.masterconcept.ai` + `careers.mcai.dev`), but the pattern is just "two custom domains, same backend, different FAB behavior". You could use `review.yourapp.com`, `yourapp-review.your-dev-tld.com`, a subdomain on a staging zone — whatever your DNS reach allows.
+
+**Also valid without a second custom domain:** list a Firebase App Hosting default `.hosted.app` URL as the review host — but only if your backend still has one available (Firebase disables the `.hosted.app` on a backend once a custom domain is attached). On projects where it stays disabled, a second custom domain is the only path.
 
 ## Project-support matrix
 
