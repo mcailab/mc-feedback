@@ -798,14 +798,15 @@ export function FeedbackWidget({
             // it a crisp edge against the colour behind it (same trick Google Maps uses on pins).
             // `touch-none` disables browser scroll on touch so a finger drag moves the pin.
             // Pin: chat-bubble shape — rounded three corners + sharp bottom-left so the pin
-            // reads as a tag/callout pointing at the anchor underneath it. 24px tall, min
-            // 24px wide, grows horizontally via `px-1` so 2–3 digit numbers fit without
-            // stretching taller. ring-2 ring-white halo for contrast against any background.
-            // The anchor sits at the pin's bottom-LEFT (the sharp corner), so -translate-y-full
-            // with NO x translate puts the tip exactly on the click point.
-            className={`absolute z-[9000] inline-flex h-6 min-w-6 -translate-y-full touch-none items-center justify-center rounded-tl-lg rounded-tr-lg rounded-br-lg px-1 text-[11px] font-semibold text-white shadow-md ring-2 ring-white transition-transform select-none hover:scale-110 ${
+            // reads as a tag/callout pointing at the anchor underneath it. 18px tall, min
+            // 18px wide (shrunk from 24px — user report, 2026-10-21), grows horizontally via
+            // `px-1` so 2–3 digit numbers fit without stretching taller. ring-2 ring-white
+            // halo for contrast against any background. The anchor sits at the pin's
+            // bottom-LEFT (the sharp corner), so -translate-y-full with NO x translate puts
+            // the tip exactly on the click point.
+            className={`absolute z-[9000] inline-flex h-[18px] min-w-[18px] -translate-y-full touch-none items-center justify-center rounded-tl-md rounded-tr-md rounded-br-md px-1 text-[10px] font-semibold text-white shadow ring-2 ring-white transition-transform select-none hover:scale-110 ${
               c.done ? 'bg-emerald-500' : 'bg-amber-500'
-            } ${c.id === activeCommentId ? 'scale-125 shadow-[0_0_30px_rgba(245,158,11,0.8)] ring-4 ring-amber-200' : ''} ${
+            } ${c.id === activeCommentId ? 'scale-110 shadow-[0_0_24px_rgba(245,158,11,0.8)] ring-4 ring-amber-200' : ''} ${
               dragId === c.id ? 'cursor-grabbing' : 'cursor-grab'
             }`}
             style={{ left: effective.x, top: effective.y }}
@@ -817,7 +818,7 @@ export function FeedbackWidget({
             {c.id === activeCommentId && (
               <span
                 aria-hidden="true"
-                className={`pointer-events-none absolute inset-0 animate-ping rounded-tl-lg rounded-tr-lg rounded-br-lg opacity-75 ${
+                className={`pointer-events-none absolute inset-0 animate-ping rounded-tl-md rounded-tr-md rounded-br-md opacity-75 ${
                   c.done ? 'bg-emerald-400' : 'bg-amber-400'
                 }`}
               />
