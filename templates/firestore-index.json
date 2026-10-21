@@ -1,0 +1,9 @@
+{
+  "comment": "Append this entry to the `indexes` array of your firestore.indexes.json, then run `firebase deploy --only firestore:indexes`.",
+  "collectionGroup": "feedback",
+  "queryScope": "COLLECTION",
+  "fields": [
+    { "fieldPath": "appId", "order": "ASCENDING" },
+    { "fieldPath": "ts", "order": "ASCENDING" }
+  ]
+}

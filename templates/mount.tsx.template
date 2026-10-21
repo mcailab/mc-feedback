@@ -1,0 +1,31 @@
+// Template: copy to your project as `src/components/feedback-mount.tsx` and swap the two
+// TODO imports for your project's values.
+// Working reference: https://github.com/mcailab/mc-ats/blob/main/src/components/feedback/ats-mount.tsx
+
+'use client';
+
+import { FeedbackWidget } from '@mcailab/mc-feedback';
+
+// TODO(1 of 2) — import your Firestore CLIENT handle. ATS/APT export `db` as a constant;
+// EIP exports `db()` as a function (invoke it: `db: db()`).
+import { db } from '@/lib/firebase/client';
+
+// TODO(2 of 2) — import your actions module from the file you built from actions.ts.template.
+import * as actions from './feedback/actions';
+
+export function MyFeedbackWidget(props: { uid: string; email: string; name: string }) {
+  return (
+    <FeedbackWidget
+      appId="your-app-id" // 'ats', 'apt', 'els', 'eip', …
+      firestore={{ db, collectionName: 'feedback' }}
+      actions={{
+        create: actions.create,
+        reply: actions.reply,
+        toggleDone: actions.toggleDone,
+        delete: actions.deleteComment,
+        move: actions.move,
+      }}
+      {...props}
+    />
+  );
+}

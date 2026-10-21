@@ -1,0 +1,64 @@
+{
+  "name": "@mcailab/mc-feedback",
+  "version": "1.0.0",
+  "description": "Click-to-comment UX feedback widget for Next.js + Firebase projects — pins, replies, resolve, element-relative anchoring. Drop-in for any mcailab product.",
+  "keywords": [
+    "feedback",
+    "ux-review",
+    "annotation",
+    "pin",
+    "firebase",
+    "nextjs",
+    "mcailab"
+  ],
+  "author": "MC AI Lab",
+  "license": "UNLICENSED",
+  "private": true,
+  "homepage": "https://github.com/mcailab/mc-feedback#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mcailab/mc-feedback.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mcailab/mc-feedback/issues"
+  },
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./capture": {
+      "types": "./src/capture.ts",
+      "default": "./src/capture.ts"
+    },
+    "./types": {
+      "types": "./src/types.ts",
+      "default": "./src/types.ts"
+    }
+  },
+  "files": [
+    "src",
+    "templates",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "firebase": ">=12.0.0 <14.0.0",
+    "firebase-admin": "^14.0.0",
+    "next": "^16.0.0",
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "firebase-admin": {
+      "optional": true
+    }
+  }
+}

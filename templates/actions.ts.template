@@ -1,0 +1,150 @@
+// Template: copy to your project as `src/components/feedback/actions.ts` and rewrite
+// the three TODO sections (identity, admin SDK import, permission check).
+// Working reference: https://github.com/mcailab/mc-ats/blob/main/src/components/feedback/actions.ts
+
+'use server';
+
+import { FieldValue } from 'firebase-admin/firestore';
+
+// TODO(1 of 3) — import your project's auth check and admin Firestore handle.
+// ATS example:  import { requireUser, isAtsStaff } from '@/lib/auth/rbac';
+//               import { adminDb } from '@/lib/firebase/admin';
+// APT example:  import { requireUser } from '@/lib/authCore';
+//               import { db as adminDb } from '@/lib/firestore';
+// EIP example:  import { requireAuthContext } from '@/server/auth/context';
+//               import { db } from '@/server/firebase/admin';  // db is a FUNCTION in EIP
+//               const adminDb = db();                           // call it once at module load
+// -------------------------------------------------------------------------------------
+import { requireUser } from '@/lib/your-auth';
+import { adminDb } from '@/lib/your-firebase-admin';
+
+import type { FeedbackActions, FeedbackElement } from '@mcailab/mc-feedback';
+
+// TODO(2 of 3) — write your "can this user leave feedback?" check. Throw if not allowed.
+async function identity() {
+  const user = await requireUser();
+  // Example — gate to staff only:
+  //   if (!isReviewer(user)) throw new Error('Only reviewers can leave feedback.');
+  return {
+    uid: user.uid,
+    email: user.email ?? '',
+    name: user.displayName ?? user.email ?? '',
+  };
+}
+
+// TODO(3 of 3) — collection name. Default is `feedback` but you can override via env.
+const COLLECTION = process.env.FEEDBACK_COLLECTION || 'feedback';
+const col = () => adminDb.collection(COLLECTION);
+
+// Element-context sanitizer — the client sends a FeedbackElement; we trust nothing and
+// clamp every field to a safe shape before writing.
+function sanitizeElement(raw: unknown): FeedbackElement | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const str = (v: unknown, cap: number) => String(v ?? '').slice(0, cap);
+  const pct = (v: unknown) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(1, n));
+  };
+  const dataAttrs: Record<string, string> = {};
+  if (r.dataAttrs && typeof r.dataAttrs === 'object') {
+    for (const [k, v] of Object.entries(r.dataAttrs as Record<string, unknown>)) {
+      if (!/^data-[a-z0-9-]+$/.test(k)) continue;
+      const value = String(v ?? '').slice(0, 120);
+      if (!value) continue;
+      dataAttrs[k] = value;
+      if (Object.keys(dataAttrs).length >= 6) break;
+    }
+  }
+  return {
+    selector: str(r.selector, 1024),
+    offsetXPct: pct(r.offsetXPct),
+    offsetYPct: pct(r.offsetYPct),
+    tag: str(r.tag, 32),
+    role: str(r.role, 64),
+    accessibleName: str(r.accessibleName, 160),
+    textContent: str(r.textContent, 240),
+    dataAttrs,
+    landmark: str(r.landmark, 240),
+  };
+}
+
+export const create: FeedbackActions['create'] = async (input) => {
+  const author = await identity();
+  const text = String(input.text ?? '').trim();
+  if (!text) return { ok: false, error: 'Comment is empty.' };
+  if (text.length > 2000) return { ok: false, error: 'Comment is too long (max 2000 chars).' };
+  const appId = String(input.appId ?? '').slice(0, 64);
+  if (!appId) return { ok: false, error: 'Missing appId.' };
+  const doc = col().doc();
+  await doc.set({
+    appId,
+    pageUrl: String(input.pageUrl ?? '').slice(0, 2048),
+    pageTitle: String(input.pageTitle ?? '').slice(0, 512),
+    vw: Math.round(Number(input.vw ?? 0)),
+    coords: {
+      x: Math.round(Number(input.coords?.x ?? 0)),
+      y: Math.round(Number(input.coords?.y ?? 0)),
+    },
+    selector: String(input.selector ?? '').slice(0, 512),
+    element: sanitizeElement(input.element),
+    text,
+    done: false,
+    authorUid: author.uid,
+    authorEmail: author.email,
+    authorName: author.name,
+    ts: Date.now(),
+    replies: [],
+    cleanedAt: null as number | null,
+  });
+  return { ok: true, id: doc.id };
+};
+
+export const reply: FeedbackActions['reply'] = async (commentId, text) => {
+  const author = await identity();
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return { ok: false, error: 'Reply is empty.' };
+  if (trimmed.length > 1000) return { ok: false, error: 'Reply is too long (max 1000 chars).' };
+  await col().doc(String(commentId)).update({
+    replies: FieldValue.arrayUnion({
+      authorUid: author.uid,
+      authorEmail: author.email,
+      authorName: author.name,
+      text: trimmed,
+      ts: Date.now(),
+    }),
+  });
+  return { ok: true };
+};
+
+export const toggleDone: FeedbackActions['toggleDone'] = async (commentId, done) => {
+  await identity();
+  await col().doc(String(commentId)).update({ done: !!done });
+  return { ok: true };
+};
+
+export const deleteComment: FeedbackActions['delete'] = async (commentId) => {
+  const author = await identity();
+  const ref = col().doc(String(commentId));
+  const snap = await ref.get();
+  if (!snap.exists) return { ok: true };
+  const data = snap.data() ?? {};
+  if (data.authorUid !== author.uid) {
+    return { ok: false, error: 'Only the author can delete their own comment.' };
+  }
+  await ref.delete();
+  return { ok: true };
+};
+
+export const move: FeedbackActions['move'] = async (commentId, coords, vw, element) => {
+  await identity();
+  const x = Math.round(Number(coords?.x ?? 0));
+  const y = Math.round(Number(coords?.y ?? 0));
+  const w = Math.round(Number(vw ?? 0));
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return { ok: false, error: 'Bad coords.' };
+  const patch: Record<string, unknown> = { coords: { x, y }, vw: w };
+  if (element !== undefined) patch.element = sanitizeElement(element);
+  await col().doc(String(commentId)).update(patch);
+  return { ok: true };
+};

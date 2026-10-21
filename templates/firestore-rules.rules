@@ -1,0 +1,13 @@
+// Fragment — paste into your firestore.rules inside the `match /databases/{database}/documents` block.
+// Writes stay OFF the client entirely (server actions stamp authorUid + appId from session).
+// Reads: your project decides who may see the drawer. Common patterns:
+//
+//   ATS:  isSuperAdmin() || roleList().hasAny(['admin', 'hr', 'manager', 'staff'])
+//   APT:  isHrOrAdmin()
+//   EIP:  isAuthenticated() && hasPermission(auth.token.permissions, 'feedback.read')
+
+match /feedback/{commentId} {
+  allow read: if request.auth != null
+    && (/* YOUR 'IS REVIEWER' CHECK HERE */);
+  allow write: if false;
+}
