@@ -1284,11 +1284,20 @@ export function FeedbackWidget({
           title={`${openAll.length} open comment${openAll.length === 1 ? '' : 's'} across the whole site${
             onPage.length > 0 ? ` (${onPage.length} on this page)` : ''
           }`}
-          className="inline-flex items-center gap-1.5 rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 shadow-md hover:border-brand-blue hover:text-brand-blue dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+          // DRAWER BUTTON — solid dark pill in light mode, solid light pill in dark mode. The
+          // previous white/zinc-900 pair blended into most page backgrounds and the hover
+          // only shifted the border (invisible against light surfaces). Inverted fill per
+          // theme + white/dark ring halo guarantees contrast against ANY underlying color.
+          className="inline-flex items-center gap-1.5 rounded-full bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white shadow-md ring-2 ring-white/80 transition-colors hover:bg-zinc-700 dark:bg-white dark:text-zinc-900 dark:ring-zinc-900/40 dark:hover:bg-zinc-200"
         >
           <Icon icon="chat" className="text-[14px]! leading-4!" />
           {openAll.length > 0 && <span>{openAll.length}</span>}
         </button>
+        {/* MAIN FAB — solid blue when idle, amber when feedback mode is on. White ring halo
+            in both themes so the circle reads over any page color. Hover darkens the fill
+            (not just scaling) so the button clearly reacts on busy backgrounds. The package
+            uses the generic `blue-600`/`blue-700` palette rather than a project token like
+            `brand-blue` so it works out of the box in every consumer. */}
         <button
           type="button"
           onClick={() => {
@@ -1297,8 +1306,10 @@ export function FeedbackWidget({
             setActiveCommentId(null);
           }}
           title={mode === 'on' ? 'Cancel feedback mode' : 'Add feedback — click anywhere on the UI'}
-          className={`inline-flex size-12 items-center justify-center rounded-full shadow-lg transition-transform hover:scale-105 ${
-            mode === 'on' ? 'bg-amber-500 text-white' : 'bg-brand-blue text-white hover:bg-blue-600'
+          className={`inline-flex size-12 items-center justify-center rounded-full text-white shadow-lg ring-2 ring-white/80 transition-colors dark:ring-zinc-900/40 ${
+            mode === 'on'
+              ? 'bg-amber-500 hover:bg-amber-600'
+              : 'bg-blue-600 hover:bg-blue-700'
           }`}
         >
           <Icon
