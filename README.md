@@ -87,6 +87,26 @@ The package expects the host to already have these:
 
 Verified against Firebase client `12.15–13.0`, admin SDK `14.1–14.5`.
 
+### ⚠️ Styling requirements — Tailwind CSS v4 + Material Symbols
+
+The widget (FAB, pins, popover, drawer) is styled **entirely with Tailwind utility classes**
+and its icons are **Material Symbols**. The host app **must** provide both, or the FAB renders
+with no styling and is effectively invisible (it's `fixed` + sized purely via Tailwind):
+
+1. **Tailwind v4** — `@import "tailwindcss";` in your global stylesheet, the `@tailwindcss/postcss`
+   plugin, and make sure Tailwind **scans the widget's source** so its classes are generated.
+   With the vendored install, add:
+   ```css
+   @source "../../vendor/mc-feedback/src";   /* path relative to the CSS file */
+   ```
+   (Tailwind v4 auto-detects committed project files, but `@source` makes it explicit.)
+   If your app uses a class-based dark mode keep your `@custom-variant dark (…)`; if it follows
+   the OS theme, map it: `@custom-variant dark (@media (prefers-color-scheme: dark));`.
+2. **Material Symbols** — add the font in your root layout `<head>`:
+   ```html
+   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" />
+   ```
+
 ## Three-step integration
 
 ### 1. Copy `templates/actions.ts.template` to your project
