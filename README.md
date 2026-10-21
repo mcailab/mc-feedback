@@ -6,7 +6,12 @@ Verified on **mc-ats** (ATS), **mcapt** (APT), **mc-eip** (EIP). Ready for ELS, 
 
 ## Install
 
-### Direct from GitHub (recommended)
+> ⚠️ **This repo is PRIVATE as of 2026-10-21.** Firebase App Hosting's build
+> environment has no GitHub credentials, so `npm install mcailab/mc-feedback`
+> **fails at build time** with `Could not read from remote repository`. Use the
+> vendored install (option B below) until the repo is made public.
+
+### Option A — direct from GitHub (works only if the repo is public)
 
 ```bash
 # npm
@@ -20,7 +25,7 @@ yarn add mcailab/mc-feedback#main
 Pin to a tag for safety:
 
 ```bash
-npm install mcailab/mc-feedback#v1.0.0
+npm install mcailab/mc-feedback#v1.0.1
 ```
 
 In a **monorepo** (mcapt's `app/` layout), run inside the Next.js app folder:
@@ -28,6 +33,37 @@ In a **monorepo** (mcapt's `app/` layout), run inside the Next.js app folder:
 ```bash
 cd app && pnpm add github:mcailab/mc-feedback#main
 ```
+
+### Option B — vendor the folder (current workaround while repo is private)
+
+What EIP uses. Copy the package source into a vendor folder beside your app, then reference it with a `file:` path in `package.json`:
+
+```bash
+# From your project root:
+git clone https://github.com/mcailab/mc-feedback vendor/mc-feedback
+# Optional — pin to a tag + strip .git so it travels with your repo:
+cd vendor/mc-feedback && git checkout v1.0.1 && rm -rf .git && cd -
+```
+
+Then add to `package.json` (or `app/package.json` in a monorepo):
+
+```json
+"dependencies": {
+  "@mcailab/mc-feedback": "file:vendor/mc-feedback"
+  // monorepo like mcapt: "file:../vendor/mc-feedback"
+}
+```
+
+**Updating the vendored copy** when a new version is pushed to `mcailab/mc-feedback`:
+
+```bash
+cd vendor/mc-feedback && git init && git remote add origin https://github.com/mcailab/mc-feedback && git fetch --tags && git checkout v1.0.2 && rm -rf .git && cd -
+# then your package manager picks it up automatically on next install
+pnpm install   # or npm install
+git add vendor/mc-feedback && git commit -m "chore: bump mc-feedback to v1.0.2"
+```
+
+Drop a `vendor/mc-feedback/VENDORED.md` beside the files so future contributors understand why the folder is checked in. (See EIP's for an example — it also records which commit was vendored.)
 
 ### Enable TS transpilation of the package
 
