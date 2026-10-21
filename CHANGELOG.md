@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.4 — 2026-10-21
+
+- **Edit button is grouped on the LEFT in the pin popover** — right after Reply instead of
+  being wedged between Resolve and Delete. Mirrors the drawer-row layout.
+- **Edit textarea replaces the static text** instead of appearing below it, so the comment
+  no longer shows twice while editing.
+- Textarea pointer events are stopped so clicks on it don't bubble to the row's navigate
+  handler and scroll the page away.
+
 ## 1.0.3 — 2026-10-21
 
 - **Author can edit their own comment** — a pencil icon beside Reply (drawer) and beside

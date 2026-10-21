@@ -883,16 +883,9 @@ export function FeedbackWidget({
                   type="button"
                   onClick={() => reply(c.id)}
                   disabled={!replyText.trim() || pending}
-                  className="rounded bg-blue-600 px-2 py-1 font-medium text-white disabled:opacity-50"
+                  className="rounded bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
                   Reply
-                </button>
-                <button
-                  type="button"
-                  onClick={() => toggleDone(c.id, !c.done)}
-                  className="rounded border border-zinc-300 px-2 py-1 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                >
-                  {c.done ? 'Reopen' : 'Resolve'}
                 </button>
                 {canDelete && actions.edit && (
                   <button
@@ -909,6 +902,13 @@ export function FeedbackWidget({
                     Edit
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={() => toggleDone(c.id, !c.done)}
+                  className="rounded border border-zinc-300 px-2 py-1 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  {c.done ? 'Reopen' : 'Resolve'}
+                </button>
                 {canDelete && (
                   <button
                     type="button"
@@ -1267,22 +1267,30 @@ export function FeedbackWidget({
                                   {timeAgo(c.ts)}
                                 </span>
                               </div>
-                              <p className="line-clamp-3 text-zinc-800 dark:text-zinc-100">
-                                {c.text}
-                              </p>
-                            </button>
-                            {/* Inline edit textarea for the current user's comment, replaces
-                                the action row while open. Author-only — the pencil icon that
-                                opens this is only shown on rows the current user wrote. */}
-                            {editingId === c.id && actions.edit ? (
-                              <div className="mt-2 border-t border-zinc-100 pt-2 dark:border-zinc-700">
+                              {/* While editing, the TEXTAREA takes the place of the static
+                                  text — showing both at once was a duplicate (bug report,
+                                  2026-10-21). The outer button also stops being clickable so
+                                  a stray navigate doesn't fire during edit. */}
+                              {editingId === c.id && actions.edit ? (
                                 <textarea
                                   value={editingText}
                                   onChange={(e) => setEditingText(e.target.value)}
                                   rows={3}
                                   autoFocus
-                                  className="w-full resize-none rounded border border-zinc-200 p-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="w-full resize-none rounded border border-zinc-200 p-1.5 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
                                 />
+                              ) : (
+                                <p className="line-clamp-3 text-zinc-800 dark:text-zinc-100">
+                                  {c.text}
+                                </p>
+                              )}
+                            </button>
+                            {/* Inline edit action row (Cancel + Save) — only renders while
+                                this row is being edited. */}
+                            {editingId === c.id && actions.edit ? (
+                              <div className="mt-2 border-t border-zinc-100 pt-2 dark:border-zinc-700">
                                 <div className="mt-1 flex items-center justify-end gap-1">
                                   <button
                                     type="button"
