@@ -10,6 +10,8 @@
 export { FeedbackWidget } from './widget';
 export type {
   FeedbackActions,
+  FeedbackChatEventKind,
+  FeedbackChatSettingsView,
   FeedbackComment,
   FeedbackElement,
   FeedbackFirestore,

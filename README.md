@@ -160,6 +160,58 @@ FEEDBACK_COLLECTION: feedback
 
 The widget renders on these hostnames only. Reviewers visit a listed host → the FAB appears. Any other host → the widget renders nothing (and runs zero Firestore reads).
 
+### 5. (Optional) Push feedback to Google Chat
+
+New feedback, replies and resolve/reopen can post into a Google Chat space, one thread per
+feedback item so its replies and status changes stack under it.
+
+```
+(Maco) 📝 Alex Wong added feedback
+       EIP · Announcements · 22 Oct, 19:46
+The Other chip is hard to see in dark mode.
+[ View feedback ]
+```
+
+| Event | Title | Body |
+|---|---|---|
+| `comment` | 📝 *name* added feedback | the feedback |
+| `reply` | 💬 *name* replied | the reply |
+| `resolved` | ✅ *name* resolved feedback | the feedback |
+| `reopened` | 🔄 *name* reopened feedback | the feedback |
+
+Edit, move and delete never post. **View feedback** opens the page with that feedback's box
+and the drawer open (`?fb=<id>`), whatever its status.
+
+**Setup**
+
+1. In the Chat space: **Apps & integrations → Webhooks → Add webhook**, copy the URL.
+2. Give the app the webhook, either way (the ⚙️ setting wins over the env var):
+   - **⚙️ in the drawer** (next to "All feedback") — paste the URL, pick events, Save. Needs
+     the optional `getChatSettings` / `saveChatSettings` actions; the gear shows only when
+     `getChatSettings` returns non-null, so return null for anyone who isn't an admin. It
+     returns the full webhook, and anyone holding it can post into the space. Store it in a
+     doc Firestore rules keep server-only. Reference: `mcailab/mc-eip`,
+     `src/app/components/feedback/actions.ts`.
+   - **Server secret** `FEEDBACK_GCHAT_WEBHOOK` (never `NEXT_PUBLIC_*`). On App Hosting:
+
+     ```bash
+     firebase apphosting:secrets:set FEEDBACK_GCHAT_WEBHOOK --project <project>
+     ```
+
+     ```yaml
+     # apphosting.yaml
+     - variable: FEEDBACK_GCHAT_WEBHOOK
+       secret: FEEDBACK_GCHAT_WEBHOOK
+       availability: [RUNTIME]
+     ```
+3. Set `FEEDBACK_APP_URL` to the **review host** (e.g. `https://eip.mcai.dev`) so View feedback
+   opens where the widget is enabled. Unset, the template uses the request's host.
+4. Optional `FEEDBACK_GCHAT_EVENTS` (comma list, default all four) when not using ⚙️.
+
+The actions template already calls `notifyGoogleChat()` from `@mcailab/mc-feedback/notify`.
+No webhook → nothing is sent. A failed push only logs a warning; the save still succeeds.
+Only `https://chat.googleapis.com/...` URLs are accepted.
+
 ### The two-domain pattern
 
 For this to be useful, you need **two custom domains pointing at the SAME Firebase App Hosting backend** (same code, same data, same auth) and the review one listed in `NEXT_PUBLIC_FEEDBACK_HOSTS`:

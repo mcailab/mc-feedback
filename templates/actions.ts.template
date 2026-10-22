@@ -5,6 +5,7 @@
 'use server';
 
 import { FieldValue } from 'firebase-admin/firestore';
+import { headers } from 'next/headers';
 
 // TODO(1 of 3) — import your project's auth check and admin Firestore handle.
 // ATS example:  import { requireUser, isAtsStaff } from '@/lib/auth/rbac';
@@ -19,6 +20,7 @@ import { requireUser } from '@/lib/your-auth';
 import { adminDb } from '@/lib/your-firebase-admin';
 
 import type { FeedbackActions, FeedbackElement } from '@mcailab/mc-feedback';
+import { notifyGoogleChat, type FeedbackChatEvent } from '@mcailab/mc-feedback/notify';
 
 // TODO(2 of 3) — write your "can this user leave feedback?" check. Throw if not allowed.
 async function identity() {
@@ -35,6 +37,44 @@ async function identity() {
 // TODO(3 of 3) — collection name. Default is `feedback` but you can override via env.
 const COLLECTION = process.env.FEEDBACK_COLLECTION || 'feedback';
 const col = () => adminDb.collection(COLLECTION);
+
+// Optional Google Chat push. FEEDBACK_GCHAT_WEBHOOK is a SERVER secret (never NEXT_PUBLIC_*).
+// Unset → nothing is sent. A failed push only logs; the comment still saves.
+// Card buttons need an absolute URL: FEEDBACK_APP_URL first, else this request's host.
+async function appBaseUrl() {
+  if (process.env.FEEDBACK_APP_URL) return process.env.FEEDBACK_APP_URL;
+  const h = await headers();
+  const host = h.get('x-forwarded-host') ?? h.get('host');
+  if (!host) return undefined;
+  const proto = h.get('x-forwarded-proto') ?? (host.startsWith('localhost') ? 'http' : 'https');
+  return `${proto}://${host}`;
+}
+
+// Runs after the write: a Chat or settings failure is only logged, never fails the action.
+// Awaited rather than after(): on Cloud Run (App Hosting) CPU may be throttled once the
+// response is sent, so work in after() might not run.
+async function pushChat(event: FeedbackChatEvent) {
+  try {
+    await notifyGoogleChat(process.env.FEEDBACK_GCHAT_WEBHOOK, event, {
+      baseUrl: await appBaseUrl(),
+      appName: 'Your App',
+      events: process.env.FEEDBACK_GCHAT_EVENTS,
+    });
+  } catch (err) {
+    console.warn('[feedback] Google Chat push skipped:', (err as Error).message);
+  }
+}
+
+// Re-read the comment so reply / resolve messages can show its page.
+async function commentInfo(commentId: string) {
+  const data = (await col().doc(commentId).get()).data() ?? {};
+  return {
+    appId: String(data.appId ?? ''),
+    text: String(data.text ?? ''),
+    pageUrl: String(data.pageUrl ?? ''),
+    pageTitle: String(data.pageTitle ?? ''),
+  };
+}
 
 // Element-context sanitizer — the client sends a FeedbackElement; we trust nothing and
 // clamp every field to a safe shape before writing.
@@ -98,6 +138,16 @@ export const create: FeedbackActions['create'] = async (input) => {
     replies: [],
     cleanedAt: null as number | null,
   });
+  await pushChat({
+    kind: 'comment',
+    appId,
+    commentId: doc.id,
+    actorName: author.name,
+    actorEmail: author.email,
+    text,
+    pageUrl: String(input.pageUrl ?? ''),
+    pageTitle: String(input.pageTitle ?? ''),
+  });
   return { ok: true, id: doc.id };
 };
 
@@ -115,12 +165,29 @@ export const reply: FeedbackActions['reply'] = async (commentId, text) => {
       ts: Date.now(),
     }),
   });
+  const info = await commentInfo(String(commentId)).catch(() => null);
+  if (info) await pushChat({
+    ...info,
+    kind: 'reply',
+    commentId: String(commentId),
+    actorName: author.name,
+    actorEmail: author.email,
+    text: trimmed,
+  });
   return { ok: true };
 };
 
 export const toggleDone: FeedbackActions['toggleDone'] = async (commentId, done) => {
-  await identity();
+  const author = await identity();
   await col().doc(String(commentId)).update({ done: !!done });
+  const info = await commentInfo(String(commentId)).catch(() => null);
+  if (info) await pushChat({
+    ...info,
+    kind: done ? 'resolved' : 'reopened',
+    commentId: String(commentId),
+    actorName: author.name,
+    actorEmail: author.email,
+  });
   return { ok: true };
 };
 
@@ -148,3 +215,24 @@ export const move: FeedbackActions['move'] = async (commentId, coords, vw, eleme
   await col().doc(String(commentId)).update(patch);
   return { ok: true };
 };
+
+// Author-only edit (the ✏️ in the popover / drawer row). Pass it as `actions.edit`.
+export const edit: NonNullable<FeedbackActions['edit']> = async (commentId, text) => {
+  const author = await identity();
+  const trimmed = String(text ?? '').trim();
+  if (!trimmed) return { ok: false, error: 'Feedback is empty.' };
+  if (trimmed.length > 2000) return { ok: false, error: 'Feedback is too long (max 2000 chars).' };
+  const ref = col().doc(String(commentId));
+  const snap = await ref.get();
+  if (!snap.exists) return { ok: false, error: 'Feedback not found.' };
+  if (snap.get('authorUid') !== author.uid) {
+    return { ok: false, error: 'Only the author can edit their own feedback.' };
+  }
+  await ref.update({ text: trimmed, editedAt: Date.now() });
+  return { ok: true };
+};
+
+// Optional ⚙️ Google Chat settings (getChatSettings / saveChatSettings): see the EIP
+// reference implementation in mcailab/mc-eip src/app/components/feedback/actions.ts — it stores
+// the webhook in a feedbackSettings/<appId> doc that Firestore rules keep server-only, and
+// returns null from getChatSettings for anyone who isn't an admin (that hides the gear).

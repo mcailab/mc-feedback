@@ -43,6 +43,29 @@ export interface FeedbackActions {
     vw: number,
     element: FeedbackElement | null,
   ) => Promise<{ ok: boolean; error?: string }>;
+  // Optional Google Chat settings (the ⚙️ next to "All feedback"). The gear only shows when
+  // these are passed AND `getChatSettings` returns non-null, so the host decides who may
+  // manage it (admins only — whoever sets the webhook decides where feedback goes).
+  getChatSettings?: () => Promise<FeedbackChatSettingsView | null>;
+  saveChatSettings?: (input: {
+    // A new webhook URL; '' / null removes it; undefined keeps the current one.
+    webhook?: string | null;
+    events: FeedbackChatEventKind[];
+  }) => Promise<{ ok: boolean; error?: string }>;
+  // Sends a test card to the given webhook (the one in the settings box, saved or not).
+  testChatSettings?: (webhook: string) => Promise<{ ok: boolean; error?: string }>;
+}
+
+export type FeedbackChatEventKind = 'comment' | 'reply' | 'resolved' | 'reopened';
+
+// Returned ONLY to viewers the host lets manage settings (EIP: Super Admin). It includes the
+// webhook itself (its key + token let anyone post into the space), so never return it to
+// anyone else — return null instead, which also hides the gear.
+export interface FeedbackChatSettingsView {
+  webhook: string;
+  // 'settings' = saved via the gear; 'env' = falling back to FEEDBACK_GCHAT_WEBHOOK.
+  source: 'settings' | 'env' | 'none';
+  events: FeedbackChatEventKind[];
 }
 
 // Firestore client-SDK handle + collection name. ATS/APT export `db` as a constant and pass

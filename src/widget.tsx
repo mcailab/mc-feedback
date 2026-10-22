@@ -5,7 +5,12 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, useTransiti
 import { usePathname, useRouter } from 'next/navigation';
 
 import { type FeedbackElement, captureElement, resolveElementPosition } from './capture';
-import type { FeedbackActions, FeedbackFirestore } from './types';
+import type {
+  FeedbackActions,
+  FeedbackChatEventKind,
+  FeedbackChatSettingsView,
+  FeedbackFirestore,
+} from './types';
 
 // Material Symbols icon — a tiny inline span rather than a project-specific `<Icon>` component.
 // Expects the host project to load the Material Symbols Outlined font (via the stylesheet
@@ -445,6 +450,8 @@ export function FeedbackWidget({
   const setDrawerTab = (next: 'open' | 'done' | 'users') => setDrawerStore({ tab: next });
   const setActiveCommentId = (next: string | null) => setDrawerStore({ activeCommentId: next });
   const [comments, setComments] = useState<Comment[]>([]);
+  // True after the first snapshot — lets a deep link tell "not loaded yet" from "deleted".
+  const [loaded, setLoaded] = useState(false);
   // ONE unsaved reply per comment, shared by the pin popover and the drawer row, and kept in
   // localStorage so a refresh does not lose it. Cleared on send and on Cancel.
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>(() =>
@@ -475,6 +482,25 @@ export function FeedbackWidget({
     pinY: number;
     moved: boolean;
   } | null>(null);
+  // Popover box move: the reviewer drags the box by its header to uncover what it hides.
+  // The offset is keyed to the comment id, so opening another pin starts at its default spot.
+  const [boxOffset, setBoxOffset] = useState<{ id: string; dx: number; dy: number } | null>(null);
+  const [boxDrag, setBoxDrag] = useState<{ startX: number; startY: number; dx: number; dy: number } | null>(
+    null,
+  );
+  // GOOGLE CHAT SETTINGS (⚙️ next to "All feedback"). `chatView` stays null until the host's
+  // getChatSettings says this viewer may manage it; null keeps the gear hidden.
+  const [chatView, setChatView] = useState<FeedbackChatSettingsView | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [webhookInput, setWebhookInput] = useState('');
+  const [chatEvents, setChatEvents] = useState<FeedbackChatEventKind[]>([]);
+  const [chatMsg, setChatMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // Drawer move: null = docked to the right edge (full height). Dragging the header turns it
+  // into a floating card at {left, top}; double-clicking the header docks it again.
+  const [drawerPos, setDrawerPos] = useState<{ left: number; top: number } | null>(null);
+  const drawerDragRef = useRef<{ startX: number; startY: number; left: number; top: number } | null>(
+    null,
+  );
   const [pending, startTransition] = useTransition();
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   // Lets the capture-phase click handler know whether a draft is open, without re-mounting the
@@ -536,6 +562,7 @@ export function FeedbackWidget({
             };
           });
           setComments(rows);
+          setLoaded(true);
         },
         (err) => {
           // Silent — the widget is best-effort and must not break the dashboard it rides on.
@@ -578,6 +605,108 @@ export function FeedbackWidget({
   // That lets a reviewer see what they have left across the whole app without having to walk
   // back to each page. Current page sorts first; after that groups are ordered by newest
   // activity so the ones that just got a comment or a reply surface at the top.
+  const getChatSettings = actions.getChatSettings;
+  useEffect(() => {
+    if (!drawerOpen || !getChatSettings) return;
+    let live = true;
+    getChatSettings()
+      .then((v) => {
+        if (!live) return;
+        setChatView(v);
+        if (v) {
+          setChatEvents(v.events);
+          setWebhookInput(v.webhook);
+        }
+      })
+      .catch(() => {
+        // Not allowed / failed — keep the gear hidden.
+      });
+    return () => {
+      live = false;
+    };
+  }, [drawerOpen, getChatSettings]);
+
+  function saveChat(webhook: string | null | undefined) {
+    if (!actions.saveChatSettings) return;
+    const save = actions.saveChatSettings;
+    startTransition(async () => {
+      const r = await save({ webhook, events: chatEvents });
+      if (!r.ok) {
+        setChatMsg({ ok: false, text: r.error || 'Could not save.' });
+        return;
+      }
+      const v = await actions.getChatSettings?.();
+      if (v) {
+        setChatView(v);
+        setWebhookInput(v.webhook);
+      }
+      setChatMsg({ ok: true, text: webhook === null ? 'Webhook removed.' : 'Saved.' });
+    });
+  }
+
+  function testChat() {
+    if (!actions.testChatSettings) return;
+    const test = actions.testChatSettings;
+    const url = webhookInput.trim();
+    startTransition(async () => {
+      const r = await test(url);
+      setChatMsg(
+        r.ok
+          ? { ok: true, text: 'Test sent — check the Chat space.' }
+          : { ok: false, text: r.error || 'Test failed.' },
+      );
+    });
+  }
+
+  // DEEP LINK from Google Chat cards: `?fb=<id>` opens that comment (drawer on its tab, pin
+  // active); `&fb_edit=1` also starts editing it — only for its author, everyone else just
+  // sees the comment. Runs once the comment has loaded, then strips the params so a refresh
+  // or Back doesn't re-trigger it.
+  // POINTER HAND on every widget button, feedback mode on or off. Tailwind v4's preflight
+  // gives buttons the default arrow, so the FAB / list button / drawer buttons didn't read as
+  // clickable. Unlayered, so it beats the layered preflight; pins and the drag header keep
+  // their own grab / move cursors.
+  useEffect(() => {
+    if (!enabled) return;
+    const style = document.createElement('style');
+    style.setAttribute('data-feedback-cursor-base', '1');
+    style.textContent =
+      ':is([data-feedback-chrome], [data-feedback-chrome] *):is(button, a, label, select, [role="button"]):not(:disabled, .cursor-grab, .cursor-grabbing, .cursor-move) { cursor: pointer; }';
+    document.head.appendChild(style);
+    return () => style.remove();
+  }, [enabled]);
+
+  const deepLinkDone = useRef(false);
+  useEffect(() => {
+    if (deepLinkDone.current || !enabled || typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('fb');
+    if (!id) {
+      deepLinkDone.current = true;
+      return;
+    }
+    const c = comments.find((x) => x.id === id);
+    if (!c && !loaded) return; // not loaded yet — the listener will re-run this
+    deepLinkDone.current = true;
+    // Deleted (or another app's) feedback: just open the list so the link isn't a dead end.
+    setDrawerStore(
+      c
+        ? { open: true, tab: c.done ? 'done' : 'open', activeCommentId: c.id }
+        : { open: true, tab: 'open', activeCommentId: null },
+    );
+    if (c && params.get('fb_edit') === '1' && c.authorUid === uid && actions.edit) {
+      // Deferred a tick: starting the edit is React state, not the external drawer store.
+      setTimeout(() => {
+        setEditingId(c.id);
+        setEditingText(c.text);
+      }, 0);
+    }
+    params.delete('fb');
+    params.delete('fb_edit');
+    const qs = params.toString();
+    window.history.replaceState(null, '', `${window.location.pathname}${qs ? `?${qs}` : ''}${window.location.hash}`);
+  }, [enabled, comments, loaded, uid, actions.edit]);
+
   const openAll = comments.filter((c) => !c.done);
   const doneAll = comments.filter((c) => c.done);
   // 'users' is a CROSS-CUTTING tab, not a filter on done/open — a reviewer looking at "who
@@ -655,8 +784,14 @@ export function FeedbackWidget({
     // than drop a pin (bug report, 2026-10-21).
     const cursorStyle = document.createElement('style');
     cursorStyle.setAttribute('data-feedback-cursor', '1');
-    cursorStyle.textContent =
-      'html.cursor-crosshair, html.cursor-crosshair * { cursor: crosshair !important; }';
+    // The widget's own chrome (FAB, Done banner, drawer, popovers, pins) is exempt: its
+    // buttons get the pointer hand and text fields the text cursor, so it reads as clickable
+    // UI, not as a spot to drop a pin. Pins keep grab, the popover header keeps move.
+    cursorStyle.textContent = [
+      'html.cursor-crosshair, html.cursor-crosshair *:not([data-feedback-chrome], [data-feedback-chrome] *) { cursor: crosshair !important; }',
+      'html.cursor-crosshair :is([data-feedback-chrome], [data-feedback-chrome] *):is(button, a, label, select, [role="button"]):not(:disabled, .cursor-grab, .cursor-grabbing, .cursor-move) { cursor: pointer !important; }',
+      'html.cursor-crosshair [data-feedback-chrome] :is(textarea, input:not([type="checkbox"])) { cursor: text !important; }',
+    ].join('\n');
     document.head.appendChild(cursorStyle);
 
     // Capture-phase, pre-handler swallow of EVERY click/pointer/mouse event that lands on
@@ -776,22 +911,287 @@ export function FeedbackWidget({
     });
   }
 
+  // DELETE = two clicks: the first arms the button (red "Delete?"), the second deletes. Arming
+  // expires after 4 s. Replaces window.confirm, which blocks the page and is easy to click through.
+  const [armedDeleteId, setArmedDeleteId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!armedDeleteId) return;
+    const t = setTimeout(() => setArmedDeleteId(null), 4000);
+    return () => clearTimeout(t);
+  }, [armedDeleteId]);
+
   function remove(id: string) {
-    if (!confirm('Delete this comment? This cannot be undone.')) return;
+    if (armedDeleteId !== id) {
+      setArmedDeleteId(id);
+      return;
+    }
+    setArmedDeleteId(null);
     startTransition(async () => {
       await actions.delete(id);
       setActiveCommentId(null);
     });
   }
 
-  function reply(id: string) {
+  function reply(id: string, wasDone: boolean) {
     const t = (replyDrafts[id] ?? '').trim();
     if (!t) return;
     startTransition(async () => {
       const r = await actions.reply(id, t);
-      if (r.ok) setReplyDraft(id, '');
+      if (r.ok) {
+        setReplyDraft(id, '');
+        setDrawerReplyFor(null);
+        // A reply to a RESOLVED comment auto-reopens it (user direction, 2026-10-21): new
+        // activity shouldn't stay buried under "Resolved".
+        if (wasDone) await actions.toggleDone(id, false);
+      }
     });
   }
+
+  // Popover box drag (header = handle). Start point lives in state, not a ref, because these
+  // handlers are built during render and passed into renderCard.
+  function startBoxDrag(e: React.PointerEvent<HTMLDivElement>, off: { dx: number; dy: number }) {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setBoxDrag({ startX: e.clientX, startY: e.clientY, dx: off.dx, dy: off.dy });
+  }
+  function moveBoxDrag(e: React.PointerEvent<HTMLDivElement>, id: string) {
+    if (!boxDrag) return;
+    setBoxOffset({ id, dx: boxDrag.dx + e.clientX - boxDrag.startX, dy: boxDrag.dy + e.clientY - boxDrag.startY });
+  }
+  function endBoxDrag() {
+    setBoxDrag(null);
+  }
+
+  function saveEdit(id: string) {
+    const txt = editingText.trim();
+    if (!txt || !actions.edit) return;
+    const edit = actions.edit;
+    startTransition(async () => {
+      const r = await edit(id, txt);
+      if (r.ok) {
+        setEditingId(null);
+        setEditingText('');
+      }
+    });
+  }
+
+  // ONE CARD LAYOUT for the pin popover and the drawer row, so both read and behave the same:
+  //   header  = #N chip · author / time-ago (· replies) · icon actions (✏️ ✓/↺ 🗑, ✕ popover)
+  //   body    = text, or the edit box (Cancel / Save) while editing
+  //   footer  = "Reply" link, or the reply box (Cancel / Send) once opened
+  // The popover passes `head` (drag handlers) and shows the element path + full replies; the
+  // row passes `onOpen` so clicking the author / text navigates to the pin.
+  const iconBtn =
+    'inline-flex h-7 w-7 items-center justify-center rounded text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-100';
+  const renderCard = (
+    c: Comment,
+    num: number,
+    variant: 'popover' | 'row',
+    opts: { onOpen?: () => void; head?: React.HTMLAttributes<HTMLDivElement> } = {},
+  ) => {
+    const mine = c.authorUid === uid;
+    const editing = editingId === c.id && !!actions.edit;
+    const replying = drawerReplyFor === c.id || !!(replyDrafts[c.id] ?? '').trim();
+    const who = (
+      <>
+        <span
+          className={`mt-0.5 shrink-0 rounded px-1 text-[10px] font-semibold text-white ${
+            c.done ? 'bg-emerald-500' : 'bg-amber-500'
+          }`}
+        >
+          #{num}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate font-medium text-zinc-700 dark:text-zinc-200">
+            {c.authorName || c.authorEmail}
+          </span>
+          <span className="block text-[10px] text-zinc-500 dark:text-zinc-400" title={new Date(c.ts).toLocaleString()}>
+            {timeAgo(c.ts)}
+            {c.replies.length > 0 && ` · ${c.replies.length} repl${c.replies.length === 1 ? 'y' : 'ies'}`}
+          </span>
+        </span>
+      </>
+    );
+    return (
+      <>
+        <div
+          {...opts.head}
+          className={`mb-1.5 flex items-start gap-2 text-xs ${opts.head ? 'cursor-move touch-none select-none' : ''}`}
+        >
+          {opts.onOpen ? (
+            <button type="button" onClick={opts.onOpen} className="flex min-w-0 flex-1 items-start gap-2 text-left">
+              {who}
+            </button>
+          ) : (
+            who
+          )}
+          <div className="-mt-1 -mr-1 flex shrink-0 items-center">
+            {mine && actions.edit && !editing && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingId(c.id);
+                  setEditingText(c.text);
+                }}
+                disabled={pending}
+                title="Edit"
+                aria-label="Edit"
+                className={iconBtn}
+              >
+                <Icon icon="edit" className="text-[16px]!" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => toggleDone(c.id, !c.done)}
+              disabled={pending}
+              title={c.done ? 'Reopen' : 'Resolve'}
+              aria-label={c.done ? 'Reopen' : 'Resolve'}
+              className={`${iconBtn} ${
+                c.done ? 'text-amber-600! dark:text-amber-400!' : 'text-emerald-600! dark:text-emerald-400!'
+              }`}
+            >
+              <Icon icon={c.done ? 'undo' : 'check_circle'} className="text-[16px]!" />
+            </button>
+            {mine && (
+              <button
+                type="button"
+                onClick={() => remove(c.id)}
+                disabled={pending}
+                title={armedDeleteId === c.id ? 'Click again to delete' : 'Delete'}
+                aria-label={armedDeleteId === c.id ? 'Confirm delete' : 'Delete'}
+                className={
+                  armedDeleteId === c.id
+                    ? 'inline-flex h-7 items-center gap-0.5 rounded bg-red-600 px-1.5 text-[11px] font-medium text-white hover:bg-red-700'
+                    : `${iconBtn} hover:bg-red-50! hover:text-red-600! dark:hover:bg-red-950! dark:hover:text-red-400!`
+                }
+              >
+                <Icon icon="delete" className="text-[16px]!" />
+                {armedDeleteId === c.id && 'Delete?'}
+              </button>
+            )}
+            {variant === 'popover' && (
+              <button
+                type="button"
+                onClick={() => setActiveCommentId(null)}
+                title="Close"
+                aria-label="Close"
+                className={iconBtn}
+              >
+                <Icon icon="close" className="text-[16px]!" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {editing ? (
+          <>
+            <textarea
+              value={editingText}
+              onChange={(e) => setEditingText(e.target.value)}
+              rows={3}
+              autoFocus
+              className="w-full resize-none rounded border border-zinc-200 p-1.5 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            />
+            <div className="mt-1 flex justify-end gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingId(null);
+                  setEditingText('');
+                }}
+                className="rounded px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => saveEdit(c.id)}
+                disabled={pending || !editingText.trim() || editingText.trim() === c.text}
+                className="rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                Save
+              </button>
+            </div>
+          </>
+        ) : opts.onOpen ? (
+          <button type="button" onClick={opts.onOpen} className="block w-full text-left">
+            <p className="line-clamp-3 text-xs text-zinc-800 dark:text-zinc-100">{c.text}</p>
+          </button>
+        ) : (
+          <p className="text-sm text-zinc-800 dark:text-zinc-100">{c.text}</p>
+        )}
+
+        {variant === 'popover' && c.element?.landmark && (
+          <p
+            className="mt-2 truncate rounded bg-zinc-50 px-2 py-1 text-[10px] text-zinc-500 dark:bg-zinc-800/60 dark:text-zinc-400"
+            title={`${c.element.tag}${c.element.role ? ` [${c.element.role}]` : ''}${c.element.accessibleName ? ` — ${c.element.accessibleName}` : ''}`}
+          >
+            <Icon icon="my_location" className="mr-1 inline text-[12px]!" />
+            {c.element.landmark}
+          </p>
+        )}
+        {variant === 'popover' && c.replies.length > 0 && (
+          <div className="mt-2 flex flex-col gap-1 rounded border border-zinc-100 bg-zinc-50 p-2 text-xs dark:border-zinc-800 dark:bg-zinc-800/50">
+            {c.replies.map((r, i) => (
+              <div key={i}>
+                <span className="font-medium text-zinc-700 dark:text-zinc-300">{r.authorName}</span>{' '}
+                <span className="text-zinc-600 dark:text-zinc-400">{r.text}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!editing && (
+          <div className="mt-2 border-t border-zinc-100 pt-2 dark:border-zinc-700">
+            {replying ? (
+              <>
+                <textarea
+                  value={replyDrafts[c.id] ?? ''}
+                  onChange={(e) => setReplyDraft(c.id, e.target.value)}
+                  placeholder="Reply…"
+                  rows={2}
+                  autoFocus
+                  className="w-full resize-none rounded border border-zinc-200 p-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                />
+                <div className="mt-1 flex justify-end gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDrawerReplyFor(null);
+                      setReplyDraft(c.id, '');
+                    }}
+                    className="rounded px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => reply(c.id, c.done)}
+                    disabled={pending || !(replyDrafts[c.id] ?? '').trim()}
+                    className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    <Icon icon="send" className="text-[12px]!" />
+                    Send
+                  </button>
+                </div>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setDrawerReplyFor(c.id)}
+                disabled={pending}
+                className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/40"
+              >
+                <Icon icon="reply" className="text-[14px]!" />
+                Reply
+              </button>
+            )}
+          </div>
+        )}
+      </>
+    );
+  };
 
   // ACTIVATION GATE — render nothing until `?feedback=1` has flipped `enabled` on. All hooks
   // above run unconditionally so React's hooks rule is honoured; the firestore listener itself
@@ -952,105 +1352,29 @@ export function FeedbackWidget({
         );
       })}
 
-      {/* Active comment popover — opens anchored to the pin. */}
+      {/* Active comment popover — opens anchored to the pin. Same card as the drawer row;
+          its header doubles as the drag handle for moving the box (buttons excluded). */}
       {activeCommentId &&
         (() => {
           const c = onPage.find((x) => x.id === activeCommentId);
           if (!c) return null;
-          const canDelete = c.authorUid === uid;
           const effective = resolveElementPosition(c.element) ?? c.coords;
+          const base = clampPopoverPosition(effective.x, effective.y);
+          const off = boxOffset?.id === c.id ? boxOffset : { dx: 0, dy: 0 };
           return (
             <div
               data-feedback-chrome
               className="absolute z-[9001] w-72 rounded-lg border border-zinc-200 bg-white p-3 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
-              style={clampPopoverPosition(effective.x, effective.y)}
+              style={{ left: base.left + off.dx, top: base.top + off.dy }}
             >
-              <div className="mb-2 flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
-                <span className="truncate font-medium text-zinc-700 dark:text-zinc-200">
-                  {c.authorName || c.authorEmail}
-                </span>
-                <span className="ml-auto">{new Date(c.ts).toLocaleString()}</span>
-              </div>
-              <p className="mb-2 text-sm text-zinc-800 dark:text-zinc-100">{c.text}</p>
-              {/* ELEMENT CONTEXT — nearest-landmark path from capture. Reads as
-                  'Documents tab › Upload button' etc. Hidden when the pin has no element record
-                  (older pins) or the landmark is empty. */}
-              {c.element?.landmark && (
-                <p
-                  className="mb-2 truncate rounded bg-zinc-50 px-2 py-1 text-[10px] text-zinc-500 dark:bg-zinc-800/60 dark:text-zinc-400"
-                  title={`${c.element.tag}${c.element.role ? ` [${c.element.role}]` : ''}${c.element.accessibleName ? ` — ${c.element.accessibleName}` : ''}`}
-                >
-                  <Icon icon="my_location" className="mr-1 inline text-[12px]!" />
-                  {c.element.landmark}
-                </p>
-              )}
-              {c.replies.length > 0 && (
-                <div className="mb-2 flex flex-col gap-1 rounded border border-zinc-100 bg-zinc-50 p-2 text-xs dark:border-zinc-800 dark:bg-zinc-800/50">
-                  {c.replies.map((r, i) => (
-                    <div key={i}>
-                      <span className="font-medium text-zinc-700 dark:text-zinc-300">
-                        {r.authorName}
-                      </span>{' '}
-                      <span className="text-zinc-600 dark:text-zinc-400">{r.text}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <textarea
-                placeholder="Reply…"
-                value={replyDrafts[c.id] ?? ''}
-                onChange={(e) => setReplyDraft(c.id, e.target.value)}
-                className="mb-2 w-full resize-none rounded border border-zinc-200 p-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-                rows={2}
-              />
-              <div className="flex gap-2 text-xs">
-                <button
-                  type="button"
-                  onClick={() => reply(c.id)}
-                  disabled={!(replyDrafts[c.id] ?? '').trim() || pending}
-                  className="rounded bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  Reply
-                </button>
-                {canDelete && actions.edit && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingId(c.id);
-                      setEditingText(c.text);
-                      setActiveCommentId(null);
-                    }}
-                    title="Edit this comment"
-                    className="inline-flex items-center gap-0.5 rounded border border-zinc-300 px-2 py-1 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                  >
-                    <Icon icon="edit" className="text-[12px]!" />
-                    Edit
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => toggleDone(c.id, !c.done)}
-                  className="rounded border border-zinc-300 px-2 py-1 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                >
-                  {c.done ? 'Reopen' : 'Resolve'}
-                </button>
-                {canDelete && (
-                  <button
-                    type="button"
-                    onClick={() => remove(c.id)}
-                    className="rounded border border-red-200 px-2 py-1 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400"
-                  >
-                    Delete
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setActiveCommentId(null)}
-                  className="ml-auto text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-200"
-                >
-                  Close
-                </button>
-              </div>
+              {renderCard(c, onPage.indexOf(c) + 1, 'popover', {
+                head: {
+                  onPointerDown: (e) => startBoxDrag(e, off),
+                  onPointerMove: (e) => moveBoxDrag(e, c.id),
+                  onPointerUp: endBoxDrag,
+                  onPointerCancel: endBoxDrag,
+                },
+              })}
             </div>
           );
         })()}
@@ -1115,14 +1439,65 @@ export function FeedbackWidget({
       {drawerOpen && (
         <aside
           data-feedback-chrome
-          className="fixed top-0 right-0 z-[9050] flex h-full w-80 flex-col border-l border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-900"
+          className={`fixed z-[9050] flex w-80 flex-col border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-900 ${
+            drawerPos ? 'h-[min(80vh,640px)] rounded-lg border' : 'top-0 right-0 h-full border-l'
+          }`}
+          style={drawerPos ?? undefined}
         >
-          <header className="flex items-start gap-2 border-b border-zinc-200 p-3 dark:border-zinc-800">
+          {/* HEADER doubles as the drag handle (buttons excluded). Double-click re-docks. */}
+          <header
+            className="flex cursor-move touch-none items-start gap-2 border-b border-zinc-200 p-3 select-none dark:border-zinc-800"
+            title={drawerPos ? 'Drag to move · double-click to dock' : 'Drag to move'}
+            onDoubleClick={(e) => {
+              if (!(e.target as HTMLElement).closest('button')) setDrawerPos(null);
+            }}
+            onPointerDown={(e) => {
+              if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return;
+              const box = e.currentTarget.parentElement!.getBoundingClientRect();
+              e.currentTarget.setPointerCapture(e.pointerId);
+              drawerDragRef.current = { startX: e.clientX, startY: e.clientY, left: box.left, top: box.top };
+            }}
+            onPointerMove={(e) => {
+              const d = drawerDragRef.current;
+              if (!d) return;
+              const dx = e.clientX - d.startX;
+              const dy = e.clientY - d.startY;
+              if (!drawerPos && Math.abs(dx) + Math.abs(dy) < 4) return; // a click, not a drag
+              // Keep the whole card width and at least the header on screen.
+              setDrawerPos({
+                left: Math.min(Math.max(0, d.left + dx), window.innerWidth - 320),
+                top: Math.min(Math.max(0, d.top + dy), window.innerHeight - 56),
+              });
+            }}
+            onPointerUp={() => {
+              drawerDragRef.current = null;
+            }}
+            onPointerCancel={() => {
+              drawerDragRef.current = null;
+            }}
+          >
             <div className="min-w-0 flex-1">
               <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                 All feedback
               </h3>
             </div>
+            {chatView && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSettingsOpen((v) => !v);
+                  setChatMsg(null);
+                }}
+                className={`rounded p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
+                  settingsOpen ? 'text-blue-600' : 'text-zinc-500'
+                }`}
+                title="Google Chat settings"
+                aria-label="Google Chat settings"
+                aria-pressed={settingsOpen}
+              >
+                <Icon icon="settings" className="text-[16px]! leading-4!" />
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setDrawerOpen(false)}
@@ -1132,7 +1507,111 @@ export function FeedbackWidget({
               <Icon icon="close" className="text-[16px]! leading-4!" />
             </button>
           </header>
-          <div className="flex gap-1 border-b border-zinc-100 p-2 text-xs dark:border-zinc-800">
+          {/* SETTINGS PANEL — covers the tabs + list while open. The webhook is write-only from
+              here: the browser only ever sees the masked hint, never the URL itself. */}
+          {settingsOpen && chatView && (
+            <div className="flex-1 overflow-y-auto p-3 text-xs">
+              <h4 className="mb-1 flex items-center gap-1 font-semibold text-zinc-800 dark:text-zinc-100">
+                <Icon icon="forum" className="text-[14px]!" />
+                Google Chat
+              </h4>
+              <label className="mb-1 block font-medium text-zinc-700 dark:text-zinc-300">
+                Webhook URL
+              </label>
+              <input
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={webhookInput}
+                onChange={(e) => setWebhookInput(e.target.value)}
+                placeholder="https://chat.googleapis.com/v1/spaces/…"
+                className="mb-3 w-full rounded border border-zinc-200 p-1.5 font-mono text-[11px] dark:border-zinc-700 dark:bg-zinc-800"
+              />
+              {/* Event switches only make sense once there's a webhook to send to. */}
+              {webhookInput.trim() && (
+                <>
+                  <div className="mb-1 font-medium text-zinc-700 dark:text-zinc-300">Send when</div>
+                  {/* One row per event: status icon (same colours as pins / tabs), label, switch. */}
+                  <div className="mb-3 divide-y divide-zinc-100 rounded border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-700">
+                    {(
+                      [
+                        ['comment', 'New feedback', 'chat_bubble', 'text-amber-500'],
+                        ['reply', 'Reply', 'reply', 'text-blue-500'],
+                        ['resolved', 'Resolved', 'check_circle', 'text-emerald-500'],
+                        ['reopened', 'Reopened', 'undo', 'text-amber-500'],
+                      ] as const
+                    ).map(([k, label, icon, tone]) => {
+                      const on = chatEvents.includes(k);
+                      return (
+                        <label
+                          key={k}
+                          className="flex items-center gap-2 px-2 py-1.5 text-zinc-700 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-800/60"
+                        >
+                          <Icon icon={icon} className={`text-[16px]! ${tone}`} />
+                          <span className="flex-1">{label}</span>
+                          <input
+                            type="checkbox"
+                            role="switch"
+                            className="peer sr-only"
+                            checked={on}
+                            onChange={(e) =>
+                              setChatEvents((prev) =>
+                                e.target.checked ? [...prev, k] : prev.filter((x) => x !== k),
+                              )
+                            }
+                          />
+                          <span
+                            aria-hidden="true"
+                            className={`relative h-4 w-7 shrink-0 rounded-full transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-blue-400 ${
+                              on ? 'bg-blue-600' : 'bg-zinc-300 dark:bg-zinc-600'
+                            }`}
+                          >
+                            <span
+                              className={`absolute top-0.5 left-0.5 size-3 rounded-full bg-white shadow transition-transform ${
+                                on ? 'translate-x-3' : ''
+                              }`}
+                            />
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = webhookInput.trim();
+                    saveChat(next === chatView.webhook ? undefined : next || null);
+                  }}
+                  disabled={pending}
+                  className="rounded bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  Save
+                </button>
+                {actions.testChatSettings && webhookInput.trim() && (
+                  <button
+                    type="button"
+                    onClick={testChat}
+                    disabled={pending}
+                    className="inline-flex items-center gap-1 rounded border border-zinc-300 px-2 py-1 text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                  >
+                    <Icon icon="send" className="text-[12px]!" />
+                    Test
+                  </button>
+                )}
+              </div>
+              {chatMsg && (
+                <p className={`mt-2 ${chatMsg.ok ? 'text-emerald-600' : 'text-red-600'}`}>{chatMsg.text}</p>
+              )}
+            </div>
+          )}
+          <div
+            className={`flex gap-1 border-b border-zinc-100 p-2 text-xs dark:border-zinc-800 ${
+              settingsOpen && chatView ? 'hidden' : ''
+            }`}
+          >
             <button
               type="button"
               onClick={() => setDrawerTab('open')}
@@ -1142,7 +1621,10 @@ export function FeedbackWidget({
                   : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'
               }`}
             >
-              <Icon icon="chat_bubble" className="text-[14px]!" />
+              <Icon
+                icon="chat_bubble"
+                className={`text-[14px]! ${drawerTab === 'open' ? '' : 'text-amber-500'}`}
+              />
               Open ({openAll.length})
             </button>
             <button
@@ -1154,7 +1636,10 @@ export function FeedbackWidget({
                   : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800'
               }`}
             >
-              <Icon icon="check_circle" className="text-[14px]!" />
+              <Icon
+                icon="check_circle"
+                className={`text-[14px]! ${drawerTab === 'done' ? '' : 'text-emerald-500'}`}
+              />
               Resolved ({doneAll.length})
             </button>
             <button
@@ -1170,7 +1655,7 @@ export function FeedbackWidget({
               Users ({userCount})
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto">
+          <div className={`flex-1 overflow-y-auto ${settingsOpen && chatView ? 'hidden' : ''}`}>
             {drawerTab === 'users' ? (
               userGroups.length === 0 ? (
                 <p className="p-3 text-xs text-zinc-500 dark:text-zinc-400">No reviewers yet.</p>
@@ -1245,7 +1730,7 @@ export function FeedbackWidget({
                                   className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 pl-9 text-left text-xs transition-colors hover:bg-zinc-100 dark:hover:bg-zinc-800"
                                 >
                                   <Icon
-                                    icon={cm.done ? 'check_circle' : 'radio_button_unchecked'}
+                                    icon={cm.done ? 'check_circle' : 'chat_bubble'}
                                     className={`shrink-0 text-[14px]! ${
                                       cm.done ? 'text-emerald-500' : 'text-amber-500'
                                     }`}
@@ -1344,7 +1829,6 @@ export function FeedbackWidget({
                     </div>
                     <div className="p-3">
                       {g.rows.map((c, i) => {
-                        const openReply = drawerReplyFor === c.id;
                         // The main title area navigates (same page = scroll to pin, other page =
                         // hard nav). The action buttons below have their own click handlers so
                         // the title click stays simple and predictable.
@@ -1372,190 +1856,9 @@ export function FeedbackWidget({
                         return (
                           <div
                             key={c.id}
-                            className="mb-2 rounded border border-zinc-200 bg-white p-2 text-xs transition-colors dark:border-zinc-700 dark:bg-zinc-800"
+                            className="mb-2 rounded border border-zinc-200 bg-white p-2 text-xs transition-colors hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-800"
                           >
-                            <button
-                              type="button"
-                              onClick={navigate}
-                              // `cursor-pointer` + hover tint so a reviewer reads the row as
-                              // clickable before they discover it (user direction, 2026-10-21).
-                              // Tailwind's reset removes the browser's default button cursor,
-                              // so this has to be explicit.
-                              title={
-                                isHere
-                                  ? 'Scroll to this pin'
-                                  : `Open ${friendlyTitle(c.pageTitle, c.pageUrl)}`
-                              }
-                              className="-mx-1 block w-full cursor-pointer rounded px-1 py-0.5 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-700/40"
-                            >
-                              {/* HEADER LINE — row number + author on the left, timestamp on
-                                  the right (user direction, 2026-10-21): the time is background
-                                  context, not the headline, and sits where the eye lands last. */}
-                              <div className="mb-1 flex items-center gap-2 text-zinc-500 dark:text-zinc-400">
-                                <span>#{indexOffset + i + 1}</span>
-                                <span className="truncate font-medium text-zinc-700 dark:text-zinc-300">
-                                  {c.authorName || c.authorEmail}
-                                </span>
-                                {c.replies.length > 0 && (
-                                  <span className="rounded-full bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600 dark:bg-zinc-700 dark:text-zinc-200">
-                                    {c.replies.length}
-                                  </span>
-                                )}
-                                <span
-                                  className="ml-auto shrink-0 text-[10px]"
-                                  title={new Date(c.ts).toLocaleString()}
-                                >
-                                  {timeAgo(c.ts)}
-                                </span>
-                              </div>
-                              {/* While editing, the TEXTAREA takes the place of the static
-                                  text — showing both at once was a duplicate (bug report,
-                                  2026-10-21). The outer button also stops being clickable so
-                                  a stray navigate doesn't fire during edit. */}
-                              {editingId === c.id && actions.edit ? (
-                                <textarea
-                                  value={editingText}
-                                  onChange={(e) => setEditingText(e.target.value)}
-                                  rows={3}
-                                  autoFocus
-                                  onPointerDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="w-full resize-none rounded border border-zinc-200 p-1.5 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-                                />
-                              ) : (
-                                <p className="line-clamp-3 text-zinc-800 dark:text-zinc-100">
-                                  {c.text}
-                                </p>
-                              )}
-                            </button>
-                            {/* Inline edit action row (Cancel + Save) — only renders while
-                                this row is being edited. */}
-                            {editingId === c.id && actions.edit ? (
-                              <div className="mt-2 border-t border-zinc-100 pt-2 dark:border-zinc-700">
-                                <div className="mt-1 flex items-center justify-end gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setEditingId(null);
-                                      setEditingText('');
-                                    }}
-                                    className="rounded px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
-                                  >
-                                    Cancel
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={pending || !editingText.trim() || editingText.trim() === c.text}
-                                    onClick={() => {
-                                      const txt = editingText.trim();
-                                      if (!txt) return;
-                                      startTransition(async () => {
-                                        const r = await actions.edit!(c.id, txt);
-                                        if (r.ok) {
-                                          setEditingId(null);
-                                          setEditingText('');
-                                        }
-                                      });
-                                    }}
-                                    className="rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                                  >
-                                    Save
-                                  </button>
-                                </div>
-                              </div>
-                            ) : null}
-                            {/* ACTION ROW — Reply, Edit (author-only), Resolve on the right. */}
-                            {!openReply && editingId !== c.id && (
-                              <div className="mt-2 flex items-center gap-1 border-t border-zinc-100 pt-2 dark:border-zinc-700">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    // Opens with any unsaved reply restored, not blank.
-                                    setDrawerReplyFor(c.id);
-                                  }}
-                                  disabled={pending}
-                                  className="rounded px-2 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-100 dark:text-blue-400 dark:hover:bg-blue-900/40 disabled:opacity-50"
-                                >
-                                  Reply
-                                </button>
-                                {c.authorUid === uid && actions.edit && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setEditingId(c.id);
-                                      setEditingText(c.text);
-                                    }}
-                                    disabled={pending}
-                                    title="Edit this comment"
-                                    className="inline-flex items-center gap-0.5 rounded px-2 py-1 text-[11px] font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-zinc-700 dark:hover:text-zinc-100"
-                                  >
-                                    <Icon icon="edit" className="text-[14px]!" />
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={() => toggleDone(c.id, !c.done)}
-                                  disabled={pending}
-                                  className={`ml-auto inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium ${
-                                    c.done
-                                      ? 'text-amber-700 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/40'
-                                      : 'text-emerald-700 hover:bg-emerald-100 dark:text-emerald-400 dark:hover:bg-emerald-900/40'
-                                  } disabled:opacity-50`}
-                                >
-                                  <Icon
-                                    icon={c.done ? 'undo' : 'check_circle'}
-                                    className="text-[14px]!"
-                                  />
-                                  {c.done ? 'Reopen' : 'Resolved'}
-                                </button>
-                              </div>
-                            )}
-                            {openReply && (
-                              <div className="mt-2">
-                                <textarea
-                                  value={replyDrafts[c.id] ?? ''}
-                                  onChange={(e) => setReplyDraft(c.id, e.target.value)}
-                                  placeholder="Reply…"
-                                  rows={2}
-                                  autoFocus
-                                  className="w-full resize-none rounded border border-zinc-200 p-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
-                                />
-                                <div className="mt-1 flex items-center justify-end gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setDrawerReplyFor(null);
-                                      setReplyDraft(c.id, '');
-                                    }}
-                                    className="rounded px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
-                                  >
-                                    Cancel
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={pending || !(replyDrafts[c.id] ?? '').trim()}
-                                    onClick={() => {
-                                      const txt = (replyDrafts[c.id] ?? '').trim();
-                                      if (!txt) return;
-                                      startTransition(async () => {
-                                        const r = await actions.reply(c.id, txt);
-                                        if (r.ok) {
-                                          setDrawerReplyFor(null);
-                                          setReplyDraft(c.id, '');
-                                          // A reply to a RESOLVED comment auto-reopens it (user
-                                          // direction, 2026-10-21). A reply is new activity, so
-                                          // the row shouldn't stay buried under "Resolved".
-                                          if (c.done) await actions.toggleDone(c.id, false);
-                                        }
-                                      });
-                                    }}
-                                    className="rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                                  >
-                                    Send
-                                  </button>
-                                </div>
-                              </div>
-                            )}
+                            {renderCard(c, indexOffset + i + 1, 'row', { onOpen: navigate })}
                           </div>
                         );
                       })}

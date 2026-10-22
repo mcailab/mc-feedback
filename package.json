@@ -1,7 +1,7 @@
 {
   "name": "@mcailab/mc-feedback",
-  "version": "1.0.0",
-  "description": "Click-to-comment UX feedback widget for Next.js + Firebase projects — pins, replies, resolve, element-relative anchoring. Drop-in for any mcailab product.",
+  "version": "1.1.0",
+  "description": "Click-to-comment UX feedback widget for Next.js + Firebase projects \u2014 pins, replies, resolve, element-relative anchoring. Drop-in for any mcailab product.",
   "keywords": [
     "feedback",
     "ux-review",
@@ -36,6 +36,10 @@
     "./capture": {
       "types": "./src/capture.ts",
       "default": "./src/capture.ts"
+    },
+    "./notify": {
+      "types": "./src/notify.ts",
+      "default": "./src/notify.ts"
     },
     "./types": {
       "types": "./src/types.ts",

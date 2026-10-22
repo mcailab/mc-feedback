@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.1.0 — 2026-10-22
+
+- **Google Chat push (new, optional)** — `notifyGoogleChat()` from `@mcailab/mc-feedback/notify`
+  posts new comments, replies and resolve/reopen into a Chat space via an incoming webhook,
+  one thread per comment. The webhook URL is read from the server secret
+  `FEEDBACK_GCHAT_WEBHOOK`; unset means nothing is sent, and a failed push never fails the
+  save. Only `chat.googleapis.com` URLs are accepted. The actions template is wired up.
+  Card design follows the Maco Reminder bot; `FEEDBACK_GCHAT_EVENTS` picks which events post.
+- **Compact Chat card** — title says who did what ("📝 Alex Wong added feedback" / "💬 Sam
+  replied" / "✅ … resolved feedback" / "🔄 … reopened feedback"), subtitle = app · page ·
+  "22 Oct, 19:46". Body = the text: the feedback (new / resolved / reopened) or the reply.
+  One **View feedback** button linking to `?fb=<id>` (the widget opens that feedback; the
+  author can add `&fb_edit=1` to land in edit mode). The button needs an absolute base
+  (`baseUrl` / `FEEDBACK_APP_URL`, e.g. `https://eip.mcai.dev`; a local dev server gives
+  localhost links). Card only — no plain-text line above it.
+- **⚙️ Google Chat settings** — gear on the right of "All feedback": the webhook URL in an
+  editable field (shows the current one); once a URL is there, "Send when" switches per event
+  (New feedback / Reply / Resolved / Reopened) and a **Test** button that posts a "✅ … tested
+  the feedback webhook" card to the URL in the box (saved or not). Clearing the field and
+  saving stops sending. New optional actions `getChatSettings` / `saveChatSettings` /
+  `testChatSettings`; the gear shows only when `getChatSettings` returns non-null, so the
+  host gates it (EIP: Super Admin) — it returns the full webhook, so never return it to anyone
+  else. `isChatWebhook` and `sendTestChat` are exported from `/notify`.
+- **Pointer cursor on every widget button** — always (Tailwind v4 preflight gave buttons the
+  arrow), and in feedback mode the forced crosshair
+  now skips the widget chrome: FAB, Done, drawer and popover buttons show the hand, text
+  boxes the text cursor; pins keep grab and the popover header keeps move.
+- **"All feedback" panel can be moved** — drag its header; it becomes a floating card
+  (80 vh, kept on screen). Double-click the header to dock it back to the right edge.
+- **Pin popover and drawer row share one card layout** — `#N` chip · author / time-ago
+  (· replies) · icon actions on the right (✏️ ✓/↺ 🗑, plus ✕ in the popover); text or the edit
+  box (Cancel / Save); then a Reply link that opens the reply box (Cancel / Send). Edit now
+  happens in place in the popover too; delete (two clicks) is in the drawer row as well; a
+  reply to a resolved comment reopens it from either place.
+- **Delete needs two clicks** — first click arms a red "Delete?", second deletes; disarms
+  after 4 s. Replaces `window.confirm`.
+- **Fix: popover Edit opened nothing when the drawer was closed** — it now opens the drawer on
+  the comment's tab with the edit box ready.
+- **Drawer row button reads "Resolve"** (was "Resolved") — it is an action, and now matches the
+  pin popover. Resolved comments still show "Reopen".
+- **Pin popover uses icon buttons** — Edit, Resolve/Reopen and Delete are icons (with tooltips)
+  in the header, and Close is a ✕ in the top-right corner. Reply stays a labelled button.
+- **Pin popover can be moved** — drag it by its header to uncover what it covers. Opening
+  another pin starts at that pin's default spot.
+- **One icon per status** — open comments show `chat_bubble` in the Users list too (was
+  `radio_button_unchecked`), matching the Open tab; resolved stays `check_circle`.
+- **One colour per status, same as the pins** — open = amber, resolved = emerald on the tab
+  icons (when not selected), the drawer `#N` badge (now a coloured chip) and the popover's
+  Resolve/Reopen icon (Reopen was grey).
+
 ## 1.0.7 — 2026-10-22
 
 Unsaved text survives a refresh (user report: a refresh lost a half-written comment).
