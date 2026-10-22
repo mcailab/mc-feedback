@@ -305,6 +305,88 @@ function setDrawerStore(patch: Partial<DrawerStoreState>) {
   drawerListeners.forEach((cb) => cb());
 }
 
+// ── UNSAVED TEXT ────────────────────────────────────────────────────────────────────────────
+// A half-written comment or reply is kept in localStorage so a refresh, a crash or a closed
+// tab does not lose it (HR request). Per app, so two apps on one domain never mix. Every
+// access is wrapped: private windows and blocked storage simply mean "nothing saved".
+type Draft = {
+  pageUrl: string;
+  coords: { x: number; y: number };
+  selector: string;
+  element: FeedbackElement | null;
+  text: string;
+};
+
+const UNSAVED_PREFIX = 'mc-feedback:unsaved:';
+const draftKey = (appId: string) => `${UNSAVED_PREFIX}${appId}:draft`;
+const replyPrefix = (appId: string) => `${UNSAVED_PREFIX}${appId}:reply:`;
+
+// The saved draft, but only for the page being opened — a draft pinned on another page would
+// float over the wrong content.
+function loadUnsavedDraft(appId: string, pathname: string): Draft | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(draftKey(appId));
+    if (!raw) return null;
+    const d = JSON.parse(raw) as Partial<Draft>;
+    if (
+      d.pageUrl !== pathname ||
+      typeof d.text !== 'string' ||
+      !d.text.trim() ||
+      !d.coords ||
+      typeof d.coords.x !== 'number' ||
+      typeof d.coords.y !== 'number'
+    )
+      return null;
+    return {
+      pageUrl: d.pageUrl,
+      coords: d.coords,
+      selector: typeof d.selector === 'string' ? d.selector : '',
+      element: d.element ?? null,
+      text: d.text,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function storeUnsavedDraft(appId: string, draft: Draft | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (draft && draft.text.trim()) localStorage.setItem(draftKey(appId), JSON.stringify(draft));
+    else localStorage.removeItem(draftKey(appId));
+  } catch {
+    // Storage unavailable — the draft still lives in memory for this page view.
+  }
+}
+
+function loadUnsavedReplies(appId: string): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  const out: Record<string, string> = {};
+  try {
+    const prefix = replyPrefix(appId);
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(prefix)) continue;
+      const v = localStorage.getItem(k);
+      if (v) out[k.slice(prefix.length)] = v;
+    }
+  } catch {
+    // Nothing saved is a fine answer.
+  }
+  return out;
+}
+
+function storeUnsavedReply(appId: string, commentId: string, text: string): void {
+  try {
+    const k = replyPrefix(appId) + commentId;
+    if (text.trim()) localStorage.setItem(k, text);
+    else localStorage.removeItem(k);
+  } catch {
+    // Storage unavailable — the reply still lives in memory.
+  }
+}
+
 export function FeedbackWidget({
   appId,
   uid,
@@ -335,13 +417,13 @@ export function FeedbackWidget({
   const router = useRouter();
   // Hostname check — see FEEDBACK_HOSTS at the top of this file.
   const enabled = useSyncExternalStore(subscribeEnabled, getEnabledSnapshot, getServerSnapshot);
-  const [mode, setMode] = useState<'off' | 'on'>('off');
-  const [draft, setDraft] = useState<{
-    coords: { x: number; y: number };
-    selector: string;
-    element: FeedbackElement | null;
-    text: string;
-  } | null>(null);
+  // UNSAVED TEXT SURVIVES A REFRESH (HR request: a refresh lost a half-written comment). A
+  // draft for THIS page is restored at mount, with feedback mode back on so its pin and box
+  // show. Read in a lazy initializer, not an effect: during hydration `enabled` is false and
+  // the widget renders nothing, so the restored state cannot cause a mismatch.
+  const [restoredDraft] = useState(() => loadUnsavedDraft(appId, pathname));
+  const [mode, setMode] = useState<'off' | 'on'>(restoredDraft ? 'on' : 'off');
+  const [draft, setDraft] = useState<Draft | null>(restoredDraft);
   // Which user row in the Users tab is currently expanded. One at a time keeps the drawer
   // compact. Not persisted — the Users tab is an inspection view, closing + reopening the
   // drawer should land you back at the collapsed overview.
@@ -363,12 +445,19 @@ export function FeedbackWidget({
   const setDrawerTab = (next: 'open' | 'done' | 'users') => setDrawerStore({ tab: next });
   const setActiveCommentId = (next: string | null) => setDrawerStore({ activeCommentId: next });
   const [comments, setComments] = useState<Comment[]>([]);
-  const [replyText, setReplyText] = useState('');
+  // ONE unsaved reply per comment, shared by the pin popover and the drawer row, and kept in
+  // localStorage so a refresh does not lose it. Cleared on send and on Cancel.
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>(() =>
+    loadUnsavedReplies(appId),
+  );
+  const setReplyDraft = (commentId: string, text: string) => {
+    setReplyDrafts((m) => ({ ...m, [commentId]: text }));
+    storeUnsavedReply(appId, commentId, text);
+  };
   // The one drawer row whose inline reply is open. Separate from `activeCommentId` so a
   // reviewer can scroll the drawer, read others, and come back to the one they were replying
   // to without losing the draft. One at a time keeps the drawer compact.
   const [drawerReplyFor, setDrawerReplyFor] = useState<string | null>(null);
-  const [drawerReplyText, setDrawerReplyText] = useState('');
   // Which comment is currently being EDITED (via the pencil icon) and the in-progress draft.
   // Author-only — the pencil icon is only shown on rows the current user authored. One at a
   // time, same as the inline-reply pattern, so the drawer stays compact.
@@ -391,6 +480,12 @@ export function FeedbackWidget({
   // Lets the capture-phase click handler know whether a draft is open, without re-mounting the
   // listeners on every draft change.
   const draftOpenRef = useRef(false);
+  // The page the reader is on, for a new draft. A ref because the click handler lives in an
+  // effect keyed on `mode` and would otherwise see the pathname from when the mode turned on.
+  const pathnameRef = useRef(pathname);
+  useEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
 
   // Live listener on `uxFeedback` ordered by timestamp.One listener for the whole app so a
   // comment dropped on one tab appears on another in realtime. Mounted ONLY when the widget is
@@ -597,7 +692,7 @@ export function FeedbackWidget({
       const y = Math.round(e.pageY);
       const selector = captureSelector(target);
       const element = captureElement(target, x, y);
-      setDraft({ coords: { x, y }, selector, element, text: '' });
+      setDraft({ pageUrl: pathnameRef.current, coords: { x, y }, selector, element, text: '' });
       // Stay in feedback mode — the reviewer keeps dropping pins (save → another → …) until
       // Esc or the FAB toggle turns it off. Industry-standard "comment mode" behaviour.
     }
@@ -638,6 +733,12 @@ export function FeedbackWidget({
     draftOpenRef.current = draft !== null;
     if (draft) draftRef.current?.focus();
   }, [draft]);
+
+  // Keep the unsaved draft in localStorage while it has text; drop it once the draft is saved,
+  // cancelled, or emptied. Writes only — no state is set here.
+  useEffect(() => {
+    storeUnsavedDraft(appId, draft);
+  }, [appId, draft]);
 
   function saveDraft() {
     if (!draft) return;
@@ -684,11 +785,11 @@ export function FeedbackWidget({
   }
 
   function reply(id: string) {
-    const t = replyText.trim();
+    const t = (replyDrafts[id] ?? '').trim();
     if (!t) return;
     startTransition(async () => {
       const r = await actions.reply(id, t);
-      if (r.ok) setReplyText('');
+      if (r.ok) setReplyDraft(id, '');
     });
   }
 
@@ -897,8 +998,8 @@ export function FeedbackWidget({
               )}
               <textarea
                 placeholder="Reply…"
-                value={replyText}
-                onChange={(e) => setReplyText(e.target.value)}
+                value={replyDrafts[c.id] ?? ''}
+                onChange={(e) => setReplyDraft(c.id, e.target.value)}
                 className="mb-2 w-full resize-none rounded border border-zinc-200 p-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
                 rows={2}
               />
@@ -906,7 +1007,7 @@ export function FeedbackWidget({
                 <button
                   type="button"
                   onClick={() => reply(c.id)}
-                  disabled={!replyText.trim() || pending}
+                  disabled={!(replyDrafts[c.id] ?? '').trim() || pending}
                   className="rounded bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
                   Reply
@@ -1369,8 +1470,8 @@ export function FeedbackWidget({
                                 <button
                                   type="button"
                                   onClick={() => {
+                                    // Opens with any unsaved reply restored, not blank.
                                     setDrawerReplyFor(c.id);
-                                    setDrawerReplyText('');
                                   }}
                                   disabled={pending}
                                   className="rounded px-2 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-100 dark:text-blue-400 dark:hover:bg-blue-900/40 disabled:opacity-50"
@@ -1412,8 +1513,8 @@ export function FeedbackWidget({
                             {openReply && (
                               <div className="mt-2">
                                 <textarea
-                                  value={drawerReplyText}
-                                  onChange={(e) => setDrawerReplyText(e.target.value)}
+                                  value={replyDrafts[c.id] ?? ''}
+                                  onChange={(e) => setReplyDraft(c.id, e.target.value)}
                                   placeholder="Reply…"
                                   rows={2}
                                   autoFocus
@@ -1424,7 +1525,7 @@ export function FeedbackWidget({
                                     type="button"
                                     onClick={() => {
                                       setDrawerReplyFor(null);
-                                      setDrawerReplyText('');
+                                      setReplyDraft(c.id, '');
                                     }}
                                     className="rounded px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-700"
                                   >
@@ -1432,15 +1533,15 @@ export function FeedbackWidget({
                                   </button>
                                   <button
                                     type="button"
-                                    disabled={pending || !drawerReplyText.trim()}
+                                    disabled={pending || !(replyDrafts[c.id] ?? '').trim()}
                                     onClick={() => {
-                                      const txt = drawerReplyText.trim();
+                                      const txt = (replyDrafts[c.id] ?? '').trim();
                                       if (!txt) return;
                                       startTransition(async () => {
                                         const r = await actions.reply(c.id, txt);
                                         if (r.ok) {
                                           setDrawerReplyFor(null);
-                                          setDrawerReplyText('');
+                                          setReplyDraft(c.id, '');
                                           // A reply to a RESOLVED comment auto-reopens it (user
                                           // direction, 2026-10-21). A reply is new activity, so
                                           // the row shouldn't stay buried under "Resolved".

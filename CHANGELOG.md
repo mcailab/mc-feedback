@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.7 — 2026-10-22
+
+Unsaved text survives a refresh (user report: a refresh lost a half-written comment).
+
+- **New-comment draft is kept** in localStorage (per `appId`) while it has text. Reloading the
+  same page brings back the draft pin, the text and feedback mode. It is cleared on save, Cancel,
+  Esc, a click outside or the FAB toggle, and when the text is emptied.
+- **Replies are kept per comment**, shared by the pin popover and the drawer row, so opening Reply
+  again after a refresh shows what was typed. Cleared on send or Cancel.
+- Nothing is written to Firestore until Save / Reply, as before. All storage access is guarded, so
+  a private window or blocked storage simply keeps the text in memory only.
+
 ## 1.0.6 — 2026-10-21
 
 Industry-standard "comment mode" — persistent, keyboard-dismissable.
